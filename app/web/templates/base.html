@@ -56,6 +56,7 @@
     <a href="/sales?c={{ company_id }}" {% if active == 'sales' %}class="active"{% endif %}>Sprzedaz</a>
     <a href="/purchases?c={{ company_id }}" {% if active == 'purchases' %}class="active"{% endif %}>Zakupy</a>
     <a href="/settings?c={{ company_id }}" {% if active == 'settings' %}class="active"{% endif %}>Ustawienia</a>
+    <a href="/setup" {% if active == 'setup' %}class="active"{% endif %}>Konfigurator</a>
     <a href="/audit?c={{ company_id }}" {% if active == 'audit' %}class="active"{% endif %}>Audyt</a>
     <span style="margin-left:auto">
         <form method="get" action="{{ request.url.path }}" class="inline">

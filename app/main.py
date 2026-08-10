@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import AppConfig, load_config
 from app.web.deps import AppContext
-from app.web.routes import audit, dashboard, purchases, sales, settings
+from app.web.routes import audit, dashboard, purchases, sales, settings, setup
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ def create_app(cfg: AppConfig | None = None) -> FastAPI:
     app.state.templates = Jinja2Templates(directory=str(templates_dir))
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+    app.include_router(setup.router)
     app.include_router(dashboard.router)
     app.include_router(sales.router)
     app.include_router(purchases.router)

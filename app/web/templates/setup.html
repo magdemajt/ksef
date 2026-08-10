@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block title %}Konfigurator — ksef-bridge{% endblock %}
+{% block content %}
+<h1>Konfigurator pierwszego uruchomienia</h1>
+
+<div class="card">
+    <p>Kreator przeprowadza przez pelna konfiguracje. Mozna tu wrocic w kazdej chwili
+       (Ustawienia dzialaja niezaleznie).</p>
+    <table>
+        <tr>
+            <th></th><th>Krok</th><th>Status</th>
+        </tr>
+        <tr>
+            <td>1</td>
+            <td><a href="/setup?step=1">Serwer SQL Optimy</a></td>
+            <td>
+                {% if status.sql_ok %}<span class="badge b-accepted">OK — przetestowane</span>
+                {% elif status.sql_password_set %}<span class="badge b-duplicate">zapisane, niezweryfikowane</span>
+                {% else %}<span class="badge b-error">do zrobienia</span>{% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td>2</td>
+            <td><a href="/setup?step=2">Firma</a></td>
+            <td>
+                {% if status.company_ok %}<span class="badge b-accepted">OK — {{ status.real_companies | join(', ') }}</span>
+                {% else %}<span class="badge b-error">do zrobienia</span>{% endif %}
+                {% if status.placeholder_companies %}
+                <span class="muted">(placeholder: {{ status.placeholder_companies | join(', ') }})</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td>3</td>
+            <td><a href="/setup?step=3">Dostep do KSeF</a></td>
+            <td>
+                {% if status.ksef_ok %}<span class="badge b-accepted">OK</span>
+                {% else %}<span class="badge b-error">do zrobienia</span>{% endif %}
+                {% for cid in status.real_companies %}
+                    {% if status.ksef_tested.get(cid) %}<span class="badge b-accepted">{{ cid }}: auth przetestowany</span>
+                    {% elif status.ksef_ready.get(cid) %}<span class="badge b-duplicate">{{ cid }}: token zapisany</span>
+                    {% else %}<span class="badge b-blocked">{{ cid }}: brak tokena</span>{% endif %}
+                {% endfor %}
+            </td>
+        </tr>
+        <tr>
+            <td>4</td>
+            <td><a href="/setup?step=4">Podsumowanie</a></td>
+            <td>{% if status.complete %}<span class="badge b-accepted">konfiguracja kompletna</span>
+                {% else %}<span class="badge b-blocked">—</span>{% endif %}</td>
+        </tr>
+    </table>
+</div>
+
+{% if message %}
+<div class="card">
+    <p class="{% if message_ok %}muted{% else %}error-text{% endif %}"><strong>{{ message }}</strong></p>
+</div>
+{% endif %}
+
+{% if step == 1 %}
+<div class="card">
+    <h3>Krok 1: serwer SQL z bazami Optimy</h3>
+    <p class="muted">Program laczy sie z baza Optimy bezposrednio przez MS SQL. Potrzebny jest
+       login z prawem odczytu. Jesli go nie ma, admin serwera tworzy go tak (SSMS, baza master):</p>
+    <pre style="background:#f0f0f0; padding:.6rem; overflow-x:auto; font-size:.82rem">CREATE LOGIN ksef_reader WITH PASSWORD = 'SilneHaslo123!';
+-- w kazdej bazie firmowej (CDN_*):
+USE CDN_Firma; CREATE USER ksef_reader FOR LOGIN ksef_reader;
+ALTER ROLE db_datareader ADD MEMBER ksef_reader;</pre>
+    <p class="muted">Login zapisu (opcjonalny, dopiero dla etapu bezposrednich INSERT-ow do rejestru VAT)
+       potrzebuje dodatkowo INSERT na CDN.VatNag, CDN.VatTab, CDN.BnkZdarzenia.</p>
+    <form method="post" action="/setup/sql">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <p>Serwer (host,port): <input type="text" name="optima_server"
+               value="{{ context.cfg.optima.server }}" size="30" placeholder="192.168.1.10,1433"></p>
+        <p>Login odczytu: <input type="text" name="read_user" value="{{ context.cfg.optima.read_user }}">
+           &nbsp; Haslo: <input type="password" name="sql_read_password"
+               placeholder="{% if status.sql_password_set %}(bez zmian){% else %}wymagane{% endif %}"
+               autocomplete="new-password"></p>
+        <p>Login zapisu: <input type="text" name="write_user" value="{{ context.cfg.optima.write_user }}">
+           &nbsp; Haslo: <input type="password" name="sql_write_password" placeholder="(opcjonalne)"
+               autocomplete="new-password"></p>
+        <p><label><input type="checkbox" name="skip_test"> zapisz bez testu polaczenia
+           (serwer chwilowo niedostepny)</label></p>
+        <p><button type="submit">Zapisz i przetestuj polaczenie</button></p>
+    </form>
+</div>
+{% endif %}
+
+{% if step == 2 %}
+<div class="card">
+    <h3>Krok 2: firma</h3>
+    <p class="muted">Kazda firma to jedna baza firmowa Optimy + NIP. Najpierw sprobuj wykryc
+       bazy automatycznie — nazwy firm program odczyta z bazy konfiguracyjnej Optimy.</p>
+    <form method="post" action="/setup/discover" class="inline">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <button type="submit">Wykryj bazy Optimy na serwerze</button>
+    </form>
+    {% if discovery %}
+    {% set res = discovery.result %}
+    {% for err in res.errors %}<p class="error-text">{{ err }}</p>{% endfor %}
+    <table style="margin-top:.6rem">
+        <tr><th>Baza</th><th>Typ</th><th>Firma</th></tr>
+        {% for db in res.databases %}
+        <tr>
+            <td>{{ db.name }}</td>
+            <td>{% if db.kind == 'company' %}<span class="badge b-accepted">firmowa</span>
+                {% elif db.kind == 'config' %}<span class="badge b-new">konfiguracyjna</span>
+                {% elif db.kind == 'no_access' %}<span class="badge b-error">brak dostepu</span>
+                {% else %}<span class="badge b-blocked">inna</span>{% endif %}</td>
+            <td>{{ db.company_name or '—' }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+
+    {% set edit_cid = status.placeholder_companies[0] if status.placeholder_companies else '' %}
+    <h4 style="margin-top:1rem">{% if edit_cid %}Uzupelnij dane firmy{% else %}Dodaj firme{% endif %}</h4>
+    <form method="post" action="/setup/company">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <p>Identyfikator: <input type="text" name="company_id" required pattern="[a-z0-9_]+"
+               value="{{ edit_cid }}" {% if edit_cid %}readonly{% endif %} placeholder="np. firma_a">
+           &nbsp; NIP: <input type="text" name="nip" required placeholder="10 cyfr"
+               value="{% if edit_cid and context.cfg.companies[edit_cid].nip != placeholder_nip %}{{ context.cfg.companies[edit_cid].nip }}{% endif %}"></p>
+        <p>Nazwa: <input type="text" name="name" required size="40"
+               value="{% if edit_cid %}{{ context.cfg.companies[edit_cid].name }}{% endif %}"></p>
+        <p>Adres (linia 1): <input type="text" name="address_line1" size="30"
+               value="{% if edit_cid %}{{ context.cfg.companies[edit_cid].address_line1 }}{% endif %}">
+           &nbsp; (linia 2): <input type="text" name="address_line2" size="25"
+               value="{% if edit_cid %}{{ context.cfg.companies[edit_cid].address_line2 }}{% endif %}"></p>
+        <p>Baza firmowa: <input type="text" name="database" required
+               value="{% if edit_cid %}{{ context.cfg.companies[edit_cid].database }}{% endif %}"
+               placeholder="CDN_Firma">
+           <span class="muted">(nazwa z tabeli wykrywania powyzej)</span></p>
+        <p>Rejestr VAT zakupu: <input type="text" name="purchase_register" size="10"
+               value="{% if edit_cid %}{{ context.cfg.companies[edit_cid].purchase_register }}{% else %}ZAKUP{% endif %}">
+           &nbsp; Numeracja Lp:
+           <select name="lp_numbering">
+               <option value="month">miesieczna</option>
+               <option value="year">roczna</option>
+           </select></p>
+        <p><button type="submit">Zapisz firme</button></p>
+    </form>
+</div>
+{% endif %}
+
+{% if step == 3 %}
+<div class="card">
+    <h3>Krok 3: dostep do KSeF</h3>
+    <p class="muted"><strong>Srodowisko TEST</strong> — do prob, faktury nie maja skutkow prawnych;
+       konto i token program utworzy sam jednym przyciskiem.<br>
+       <strong>PROD</strong> — token generuje sie w aplikacji podatnika KSeF
+       (ksef.podatki.gov.pl) po zalogowaniu profilem zaufanym/podpisem: Uprawnienia →
+       Tokeny → Wygeneruj (uprawnienia: wystawianie i przegladanie faktur).</p>
+    <form method="post" action="/setup/ksef">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <p>Srodowisko:
+            <select name="environment">
+                {% for env in ['test', 'demo', 'prod'] %}
+                <option value="{{ env }}" {% if status.environment == env %}selected{% endif %}>{{ env | upper }}</option>
+                {% endfor %}
+            </select>
+            &nbsp; Firma:
+            <select name="target_company">
+                {% for cid in status.real_companies or context.cfg.companies.keys() %}
+                <option value="{{ cid }}">{{ cid }} ({{ context.cfg.companies[cid].nip }})</option>
+                {% endfor %}
+            </select></p>
+        <p>Token KSeF: <input type="password" name="ksef_token" size="45"
+               placeholder="wklej token dla wybranego srodowiska" autocomplete="new-password"></p>
+        <p><button type="submit">Zapisz i przetestuj uwierzytelnienie</button></p>
+    </form>
+    {% if status.environment == 'test' %}
+    <hr>
+    <form method="post" action="/setup/ksef-testdata">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <p>Albo (tylko TEST):
+            <select name="target_company">
+                {% for cid in status.real_companies or context.cfg.companies.keys() %}
+                <option value="{{ cid }}">{{ cid }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit">Utworz konto testowe KSeF + token automatycznie</button></p>
+        <p class="muted">Uwaga: wygenerowany zostanie losowy NIP testowy i <strong>podmieni NIP firmy</strong>
+           w konfiguracji (token KSeF dziala tylko w kontekscie swojego NIP). Przy przejsciu na PROD
+           przywroc prawdziwy NIP w Ustawieniach.</p>
+    </form>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if step == 4 %}
+<div class="card">
+    <h3>Krok 4: podsumowanie</h3>
+    {% if status.complete %}
+    <p><strong>Konfiguracja kompletna.</strong> Co dalej:</p>
+    <ol>
+        <li>Zakladka <a href="/sales?c={{ status.real_companies[0] }}">Sprzedaz</a> — lista faktur z Optimy;
+            wysylka po zaznaczeniu i potwierdzeniu.</li>
+        <li>Zakladka <a href="/purchases?c={{ status.real_companies[0] }}">Zakupy</a> — „Synchronizuj z KSeF"
+            pobiera faktury zakupu; eksport do Optimy przez plik XML pracy rozproszonej.</li>
+        <li>Przed pierwsza wysylka produkcyjna: uruchom diagnostyke bazy
+            (<code>ksef-bridge diagnose</code>) i porownaj stawki VAT z raportem (README, etap M2).</li>
+        <li>Bezposredni zapis faktur zakupu do rejestru VAT (bez recznego importu) wymaga
+            procedury z README (etap M5: backup, snapshot/diff, insert_spec).</li>
+    </ol>
+    <p><a class="btn" href="/">Przejdz do pulpitu</a></p>
+    {% else %}
+    <p class="error-text">Konfiguracja niekompletna — wroc do krokow oznaczonych na czerwono.</p>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

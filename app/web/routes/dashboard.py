@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import RedirectResponse
 
+from app.setup_state import get_setup_status
 from app.web.deps import AppContext, ctx
 
 router = APIRouter()
@@ -9,6 +11,8 @@ router = APIRouter()
 
 @router.get("/")
 def dashboard(request: Request, c: str | None = None, context: AppContext = Depends(ctx)):
+    if not get_setup_status(context).complete:
+        return RedirectResponse("/setup", status_code=303)
     company_id = c or context.default_company_id()
     company = context.company(company_id)
     env = context.cfg.ksef.environment

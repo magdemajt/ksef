@@ -159,7 +159,7 @@ def main() -> None:
     print(f"Konfiguracja: {cfg_path}" + ("  (utworzona - uzupelnij dane w GUI)" if first_run else ""))
 
     cfg = load_config(cfg_path)
-    url = f"http://{cfg.web.host}:{cfg.web.port}" + ("/settings" if first_run else "/")
+    url = f"http://{cfg.web.host}:{cfg.web.port}" + ("/setup" if first_run else "/")
 
     threading.Timer(1.5, lambda: webbrowser.open(url)).start()
     print(f"GUI: {url}  (Ctrl+C zatrzymuje aplikacje)")
