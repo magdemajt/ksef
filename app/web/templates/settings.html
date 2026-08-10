@@ -39,7 +39,7 @@
 <div class="card">
     <h3>Firmy</h3>
     <table>
-        <tr><th>Id</th><th>Nazwa</th><th>NIP</th><th>Baza Optimy</th><th>Auth</th><th>Rejestr zakupu</th><th>Zapisy SQL</th></tr>
+        <tr><th>Id</th><th>Nazwa</th><th>NIP</th><th>Baza Optimy</th><th>Auth</th><th>Rejestr zakupu</th><th>Zapisy SQL</th><th></th></tr>
         {% for cid, comp in context.cfg.companies.items() %}
         <tr>
             <td>{{ cid }}</td>
@@ -50,6 +50,7 @@
             <td>{{ comp.purchase_register }}</td>
             <td>{% if comp.writes_enabled %}<span class="badge b-accepted">wlaczone</span>
                 {% else %}<span class="badge b-blocked">wylaczone</span>{% endif %}</td>
+            <td><a href="/settings/company/{{ cid }}?c={{ company_id }}">edytuj</a></td>
         </tr>
         {% endfor %}
     </table>

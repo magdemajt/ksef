@@ -107,8 +107,17 @@ def add_company(company_id: str, fields: dict, path: Path | None = None) -> None
     _write_atomic(path, doc)
 
 
-def update_company(company_id: str, fields: dict, path: Path | None = None) -> None:
-    """Aktualizuje istniejaca firme (tylko przekazane, niepuste pola)."""
+def update_company(
+    company_id: str,
+    fields: dict,
+    writes_enabled: bool | None = None,
+    path: Path | None = None,
+) -> None:
+    """Aktualizuje istniejaca firme (tylko przekazane, niepuste pola).
+
+    writes_enabled przekazywane osobno i jawnie - to bramka bezposrednich
+    INSERT-ow do bazy Optimy (etap M5), nie zwykle pole formularza.
+    """
     path = path or config_path()
     doc = _load_doc(path)
     companies = doc.get("companies") or {}
@@ -118,5 +127,7 @@ def update_company(company_id: str, fields: dict, path: Path | None = None) -> N
         value = fields.get(field)
         if value not in (None, ""):
             companies[company_id][field] = value
+    if writes_enabled is not None:
+        companies[company_id]["writes_enabled"] = writes_enabled
     _validate(doc)
     _write_atomic(path, doc)

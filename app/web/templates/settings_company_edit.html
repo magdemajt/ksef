@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Edycja firmy {{ edit_id }} — ksef-bridge{% endblock %}
+{% block content %}
+<h1>Edycja firmy: {{ edit_company.name }} <span class="muted">({{ edit_id }})</span></h1>
+
+{% if message %}
+<div class="card">
+    <p class="{% if message_ok %}muted{% else %}error-text{% endif %}"><strong>{{ message }}</strong></p>
+</div>
+{% endif %}
+
+<div class="card">
+    <form method="post" action="/settings/company/{{ edit_id }}">
+        <input type="hidden" name="c" value="{{ company_id }}">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <p>NIP: <input type="text" name="nip" value="{{ edit_company.nip }}" required>
+           &nbsp; Nazwa: <input type="text" name="name" value="{{ edit_company.name }}" required size="40"></p>
+        <p>Adres (linia 1): <input type="text" name="address_line1" value="{{ edit_company.address_line1 }}" size="30">
+           &nbsp; (linia 2): <input type="text" name="address_line2" value="{{ edit_company.address_line2 }}" size="25"></p>
+        <p>Baza firmowa Optimy: <input type="text" name="database" value="{{ edit_company.database }}" required></p>
+        <p>
+            Rejestr VAT zakupu: <input type="text" name="purchase_register" value="{{ edit_company.purchase_register }}" size="10">
+            &nbsp; Numeracja Lp:
+            <select name="lp_numbering">
+                <option value="month" {% if edit_company.lp_numbering == 'month' %}selected{% endif %}>miesieczna</option>
+                <option value="year" {% if edit_company.lp_numbering == 'year' %}selected{% endif %}>roczna</option>
+            </select>
+        </p>
+        <p>
+            Uwierzytelnienie KSeF:
+            <select name="auth_method" onchange="document.getElementById('cert-row').style.display = this.value === 'ksef_cert' ? '' : 'none'; document.getElementById('token-row').style.display = this.value === 'token' ? '' : 'none';">
+                <option value="token" {% if edit_company.auth_method == 'token' %}selected{% endif %}>token KSeF</option>
+                <option value="ksef_cert" {% if edit_company.auth_method == 'ksef_cert' %}selected{% endif %}>certyfikat KSeF (.p12)</option>
+            </select>
+        </p>
+        <p id="token-row" {% if edit_company.auth_method != 'token' %}style="display:none"{% endif %}>
+            Nowy token KSeF: <input type="password" name="ksef_token" size="40"
+               placeholder="(puste = bez zmian)" autocomplete="new-password">
+            <span class="muted">dla srodowiska: {{ context.cfg.ksef.environment | upper }}</span></p>
+        <p id="cert-row" {% if edit_company.auth_method != 'ksef_cert' %}style="display:none"{% endif %}>
+            Sciezka .p12: <input type="text" name="ksef_cert_path" value="{{ edit_company.ksef_cert_path }}" size="40">
+            &nbsp; Nowe haslo .p12: <input type="password" name="p12_password"
+               placeholder="(puste = bez zmian)" autocomplete="new-password"></p>
+        <p>
+            <label><input type="checkbox" name="writes_enabled" {% if edit_company.writes_enabled %}checked{% endif %}>
+            zapisy SQL do rejestru VAT Optimy (writes_enabled)</label>
+        </p>
+        <p class="error-text" style="font-size:.85rem">Uwaga: wlaczaj zapisy SQL dopiero po przejsciu
+           procedury z README (backup, snapshot/diff na kopii bazy, insert_spec, weryfikacja jednej
+           faktury). Bez pliku insert_spec zapis i tak zostanie odmowiony.</p>
+        <p>
+            <button type="submit">Zapisz zmiany</button>
+            <a class="btn" style="background:#777" href="/settings?c={{ company_id }}">Anuluj</a>
+        </p>
+    </form>
+</div>
+{% endblock %}
