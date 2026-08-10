@@ -124,6 +124,15 @@ def selftest() -> int:
         print(f"SELFTEST FAILED: parser: {parsed.total_gross}")
         return 1
 
+    # sterownik SQL: import wymusza zaladowanie natywnego ddbc_bindings (.pyd/.so),
+    # ktorego brak w bundlu objawialby sie dopiero przy pierwszym polaczeniu
+    try:
+        import mssql_python  # noqa: F401
+        from mssql_python import connect  # noqa: F401
+    except Exception as exc:  # noqa: BLE001
+        print(f"SELFTEST FAILED: sterownik mssql-python nie laduje sie: {exc}")
+        return 1
+
     from importlib import resources
     if not resources.files("app.state").joinpath("schema.sql").is_file():
         print("SELFTEST FAILED: brak schema.sql w bundlu")

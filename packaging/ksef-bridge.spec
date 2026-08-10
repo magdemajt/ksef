@@ -17,6 +17,18 @@ for pkg in ("ksef2", "mssql_python", "signxml"):
     binaries += b
     hiddenimports += h
 
+# mssql-python laduje ddbc_bindings.cp{ver}-{arch}.pyd wlasnym loaderem po nazwie
+# pliku - collect_all/collect_dynamic_libs nie zbiera .pyd, wiec dokladamy recznie
+# wszystkie natywne pliki pakietu z zachowaniem ukladu katalogow.
+import pathlib
+import mssql_python as _mssql
+
+_pkg_dir = pathlib.Path(_mssql.__file__).parent
+for _f in _pkg_dir.rglob("*"):
+    if _f.suffix.lower() in (".pyd", ".dll", ".so", ".dylib") or ".so." in _f.name:
+        _dest = pathlib.Path("mssql_python") / _f.parent.relative_to(_pkg_dir)
+        datas.append((str(_f), str(_dest)))
+
 # nasze zasoby: szablony, statyki, XSD, schema.sql
 datas += [
     ("../app/web/templates", "app/web/templates"),
