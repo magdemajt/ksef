@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ row['invoice_number'] }} — ksef-bridge{% endblock %}
+{% block content %}
+<h1>Faktura {{ row['invoice_number'] }}</h1>
+<div class="card">
+    <p><strong>Numer KSeF:</strong> {{ row['ksef_number'] }}</p>
+    <p><strong>Sprzedawca:</strong> {{ row['seller_name'] }} (NIP {{ row['seller_nip'] }})</p>
+    <p><strong>Data wystawienia:</strong> {{ row['issue_date'] }} ·
+       <strong>Data przyjecia w KSeF:</strong> {{ row['storage_date'] }}</p>
+    <p><strong>Netto:</strong> {{ '%.2f' | format(row['net'] or 0) }} ·
+       <strong>VAT:</strong> {{ '%.2f' | format(row['vat'] or 0) }} ·
+       <strong>Brutto:</strong> {{ '%.2f' | format(row['gross'] or 0) }} {{ row['currency'] or 'PLN' }}</p>
+    <p><strong>Status:</strong> <span class="badge b-{{ row['status'] }}">{{ row['status'] }}</span>
+       {% if row['van_id'] %}· VaN_VaNID: {{ row['van_id'] }}{% endif %}</p>
+    {% if row['error_detail'] %}<p class="error-text">{{ row['error_detail'] }}</p>{% endif %}
+</div>
+{% if parsed %}
+<div class="card">
+    <h3>Rozbicie VAT</h3>
+    <table>
+        <tr><th>Stawka</th><th class="num">Netto</th><th class="num">VAT</th></tr>
+        {% for line in parsed.vat_lines %}
+        <tr>
+            <td>{{ line.stawka_symbol }}</td>
+            <td class="num">{{ line.netto }}</td>
+            <td class="num">{{ line.vat }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% if parsed.payment_due %}<p><strong>Termin platnosci:</strong> {{ parsed.payment_due }}</p>{% endif %}
+    {% if parsed.bank_account %}<p><strong>Rachunek:</strong> {{ parsed.bank_account }}</p>{% endif %}
+</div>
+{% endif %}
+{% if row['xml_path'] %}
+<p><a class="btn" href="/purchases/{{ row['id'] }}/xml?c={{ company_id }}">Pobierz XML zrodlowy</a></p>
+{% endif %}
+{% endblock %}

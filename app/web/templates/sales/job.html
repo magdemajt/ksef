@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Status wysylki — ksef-bridge{% endblock %}
+{% block content %}
+<h1>Status wysylki</h1>
+<div id="job-status"
+     hx-get="/jobs/send?c={{ company_id }}&trn_ids={{ trn_ids | join(',') }}"
+     hx-trigger="load, every 3s"
+     hx-swap="innerHTML">
+    Ladowanie...
+</div>
+<p><a class="btn" href="/sales?c={{ company_id }}">Wroc do listy</a></p>
+{% endblock %}

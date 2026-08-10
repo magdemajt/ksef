@@ -1,0 +1,69 @@
+# ksef-bridge - konfiguracja
+# Skopiuj do config.toml i uzupelnij. config.toml jest w .gitignore - nie commituj go.
+# Sekrety (token KSeF, hasla SQL, haslo do .p12) NIE trafiaja tutaj - trzymane sa w keyring:
+#   ksef-bridge secrets set ksef-token --company firma_a
+#   ksef-bridge secrets set sql-read-password
+#   ksef-bridge secrets set sql-write-password
+
+[ksef]
+# Srodowisko KSeF: test | demo | prod
+environment = "test"
+# Twarda bramka wysylki produkcyjnej. Nawet po zmianie environment na "prod"
+# wysylka jest odmawiana dopoki ta flaga nie jest true, a kazda partia wymaga
+# przepisania NIP firmy w formularzu potwierdzenia.
+allow_prod_send = false
+
+[optima]
+# Serwer MS SQL z bazami Optimy, format: host lub host,port
+server = "192.168.1.10,1433"
+# Osobne loginy SQL (zasada najmniejszych uprawnien):
+#   ksef_reader - tylko SELECT na bazach firmowych
+#   ksef_writer - SELECT + INSERT wylacznie na CDN.VatNag, CDN.VatTab, CDN.BnkZdarzenia
+read_user = "ksef_reader"
+write_user = "ksef_writer"
+# Zaufaj certyfikatowi serwera SQL (typowe on-prem z self-signed certem)
+trust_server_certificate = true
+
+# --- Firmy (jedna sekcja na kazda baze firmowa Optimy) ---
+
+[companies.firma_a]
+nip = "0000000000"
+name = "Firma A Sp. z o.o."
+# Dane adresowe sprzedawcy (Podmiot1 na fakturze FA(3))
+address_line1 = "ul. Przykladowa 1"
+address_line2 = "00-001 Warszawa"
+country_code = "PL"
+# Nazwa bazy firmowej na serwerze SQL
+database = "CDN_Firma_A"
+# Metoda uwierzytelnienia w KSeF: token | ksef_cert
+auth_method = "token"
+# Sciezka do certyfikatu KSeF (.p12), gdy auth_method = "ksef_cert"
+ksef_cert_path = ""
+# Nazwa rejestru VAT zakupu (VaN_Rejestr), do ktorego eksportujemy faktury z KSeF
+purchase_register = "ZAKUP"
+# Numeracja Lp w rejestrze VAT: month (restart co miesiac) | year (ciagla w roku)
+# Weryfikowane przez `ksef-bridge diagnose` na zywej bazie.
+lp_numbering = "month"
+# Bramka zapisu do bazy Optimy - wlacz dopiero po M5 (insert_spec zweryfikowany na kopii bazy)
+writes_enabled = false
+
+# [companies.firma_b]
+# nip = "1111111111"
+# ...
+
+[sync]
+# Co ile minut scheduler pobiera nowe faktury zakupu z KSeF.
+# UWAGA: limit KSeF na zapytania o metadane to 20/h per kontekst - nie schodz ponizej 5 min.
+poll_interval_minutes = 10
+# Poczatek historii przy pierwszym backfillu (YYYY-MM-DD)
+backfill_start_date = "2026-01-01"
+
+[state]
+# Lokalna baza stanu (SQLite) i magazyn XML faktur/UPO
+sqlite_path = "~/.local/share/ksef-bridge/state.db"
+invoice_store = "~/.local/share/ksef-bridge/invoices"
+
+[web]
+# GUI tylko lokalnie - nie bindowac na 0.0.0.0
+host = "127.0.0.1"
+port = 8300

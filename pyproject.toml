@@ -1,0 +1,41 @@
+[project]
+name = "ksef-bridge"
+version = "0.1.0"
+description = "Integrator Comarch ERP Optima <-> KSeF 2.0 (wysylka faktur sprzedazy, pobieranie zakupow do rejestru VAT)"
+requires-python = ">=3.12"
+dependencies = [
+    "ksef2>=0.18",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "lxml>=5.0",
+    "signxml>=5.0",
+    "cryptography>=44",
+    "mssql-python>=1.12",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "keyring>=25",
+    "typer>=0.12",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+ksef-bridge = "app.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["fa3/schemas/*.xsd", "state/schema.sql", "web/templates/**/*.html", "web/static/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

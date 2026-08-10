@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Pulpit — ksef-bridge{% endblock %}
+{% block content %}
+<h1>{{ company.name }}</h1>
+<div class="card">
+    <p><strong>NIP:</strong> {{ company.nip }} · <strong>Baza Optimy:</strong> {{ company.database }}
+       · <strong>Auth KSeF:</strong> {{ company.auth_method }}</p>
+    <p><strong>Zapisy do Optimy:</strong>
+        {% if company.writes_enabled %}<span class="badge b-accepted">wlaczone</span>
+        {% else %}<span class="badge b-blocked">wylaczone (eksport przez XML pracy rozproszonej)</span>{% endif %}
+    </p>
+</div>
+<div class="card">
+    <h3>Wysylka (sprzedaz)</h3>
+    <p>Wyslane i zaakceptowane: <strong>{{ stats.accepted }}</strong> ·
+       Odrzucone/bledy: <strong>{{ stats.rejected }}</strong> ·
+       Duplikaty: <strong>{{ stats.duplicate }}</strong></p>
+    <a class="btn" href="/sales?c={{ company_id }}">Przejdz do listy faktur sprzedazy</a>
+</div>
+<div class="card">
+    <h3>Pobieranie (zakupy)</h3>
+    <p>Pobrane: <strong>{{ stats.downloaded }}</strong> ·
+       Nowe (do eksportu): <strong>{{ stats.new }}</strong> ·
+       Wyeksportowane: <strong>{{ stats.exported }}</strong></p>
+    <p class="muted">Budzet zapytan o metadane (20/h): pozostalo <strong>{{ budget }}</strong>
+       {% if resets_at %}· odnowienie ~{{ resets_at }}{% endif %}</p>
+    <a class="btn" href="/purchases?c={{ company_id }}">Przejdz do faktur zakupu</a>
+</div>
+{% endblock %}

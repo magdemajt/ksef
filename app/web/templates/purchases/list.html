@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Zakupy — ksef-bridge{% endblock %}
+{% block content %}
+<h1>Faktury zakupu z KSeF</h1>
+<div class="card">
+    <form method="post" action="/purchases/sync" class="inline">
+        <input type="hidden" name="c" value="{{ company_id }}">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <button type="submit" {% if budget < 3 %}disabled{% endif %}>Synchronizuj z KSeF</button>
+    </form>
+    <span class="muted">
+        Budzet zapytan (20/h): pozostalo {{ budget }}{% if resets_at %} · odnowienie ~{{ resets_at }}{% endif %}
+        {% if last_sync %} · ostatnia synchronizacja: {{ last_sync }}{% endif %}
+    </span>
+    {% if sync_result %}<p><strong>{{ sync_result }}</strong></p>{% endif %}
+</div>
+
+<form method="post" action="/purchases/export">
+    <input type="hidden" name="c" value="{{ company_id }}">
+    <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+    <table>
+        <tr>
+            <th></th><th>Numer KSeF</th><th>Numer faktury</th><th>Sprzedawca</th><th>NIP</th>
+            <th>Data wyst.</th><th class="num">Netto</th><th class="num">VAT</th>
+            <th class="num">Brutto</th><th>Waluta</th><th>Status</th>
+        </tr>
+        {% for row in rows %}
+        <tr>
+            <td>
+                {% if row['status'] in ('new', 'needs_contractor') %}
+                <input type="checkbox" name="ids" value="{{ row['id'] }}">
+                {% endif %}
+            </td>
+            <td class="muted" style="font-size:.78rem">{{ row['ksef_number'] }}</td>
+            <td><a href="/purchases/{{ row['id'] }}?c={{ company_id }}">{{ row['invoice_number'] }}</a></td>
+            <td>{{ row['seller_name'] }}</td>
+            <td>{{ row['seller_nip'] }}</td>
+            <td>{{ row['issue_date'] }}</td>
+            <td class="num">{{ '%.2f' | format(row['net'] or 0) }}</td>
+            <td class="num">{{ '%.2f' | format(row['vat'] or 0) }}</td>
+            <td class="num">{{ '%.2f' | format(row['gross'] or 0) }}</td>
+            <td>{{ row['currency'] or 'PLN' }}</td>
+            <td>
+                <span class="badge b-{{ row['status'] }}">{{ status_labels[row['status']] }}</span>
+                {% if row['error_detail'] %}<div class="error-text">{{ row['error_detail'] }}</div>{% endif %}
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="11" class="muted">Brak pobranych faktur — kliknij "Synchronizuj z KSeF"</td></tr>
+        {% endfor %}
+    </table>
+    <p>
+        <button type="submit" name="mode" value="xml">Eksportuj zaznaczone do XML (praca rozproszona)</button>
+        {% if company.writes_enabled %}
+        <button type="submit" name="mode" value="direct" class="danger">Zapisz zaznaczone do rejestru VAT (SQL)</button>
+        {% else %}
+        <span class="muted">Zapis bezposredni wylaczony (writes_enabled=false)</span>
+        {% endif %}
+    </p>
+</form>
+{% endblock %}

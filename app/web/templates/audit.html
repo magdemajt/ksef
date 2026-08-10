@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Audyt — ksef-bridge{% endblock %}
+{% block content %}
+<h1>Log audytowy</h1>
+<table>
+    <tr><th>Czas (UTC)</th><th>Firma</th><th>Akcja</th><th>Obiekt</th><th>Srodowisko</th><th>Szczegoly</th></tr>
+    {% for row in rows %}
+    <tr>
+        <td>{{ row['ts'] }}</td>
+        <td>{{ row['company_id'] or '—' }}</td>
+        <td>{{ row['action'] }}</td>
+        <td>{{ row['entity'] or '' }} {{ row['entity_id'] or '' }}</td>
+        <td>{{ row['environment'] or '—' }}</td>
+        <td style="font-size:.78rem; max-width:420px; overflow-wrap:anywhere">{{ row['details_json'] or '' }}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% endblock %}

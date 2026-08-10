@@ -1,0 +1,18 @@
+<table>
+    <tr><th>Numer</th><th>Status</th><th>Numer KSeF</th><th>Szczegoly</th></tr>
+    {% for row in rows %}
+    <tr>
+        <td>{{ row.numer }}</td>
+        <td><span class="badge b-{{ row.status }}">{{ row.label }}</span></td>
+        <td>{{ row.ksef_number or '—' }}</td>
+        <td>
+            {% if row.error %}<span class="error-text">{{ row.error }}</span>{% endif %}
+            {% if row.upo %}<a href="/sales/{{ row.trn_id }}/upo?c={{ company_id }}">UPO</a>{% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+{% if done %}
+<p><strong>Wysylka zakonczona.</strong></p>
+<script>document.getElementById('job-status').removeAttribute('hx-trigger');</script>
+{% endif %}

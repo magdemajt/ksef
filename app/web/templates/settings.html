@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Ustawienia — ksef-bridge{% endblock %}
+{% block content %}
+<h1>Ustawienia</h1>
+<div class="card">
+    <h3>Firma: {{ company.name }}</h3>
+    <p>NIP: {{ company.nip }} · Baza: {{ company.database }} ·
+       Rejestr zakupu: {{ company.purchase_register }} ·
+       Numeracja Lp: {{ company.lp_numbering }} ·
+       Metoda auth: {{ company.auth_method }}</p>
+    <p class="muted">Zmiany konfiguracji: edytuj config.toml i zrestartuj aplikacje.
+       Sekrety: <code>ksef-bridge secrets set ...</code></p>
+</div>
+<div class="card">
+    <h3>Testy polaczen</h3>
+    <form method="post" action="/settings/test-optima" class="inline">
+        <input type="hidden" name="c" value="{{ company_id }}">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <button type="submit">Test polaczenia z baza Optimy</button>
+    </form>
+    <form method="post" action="/settings/test-ksef" class="inline">
+        <input type="hidden" name="c" value="{{ company_id }}">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <button type="submit">Test uwierzytelnienia KSeF</button>
+    </form>
+    {% if test_result %}
+    <p class="{% if test_ok %}muted{% else %}error-text{% endif %}"><strong>{{ test_result }}</strong></p>
+    {% endif %}
+</div>
+{% endblock %}
