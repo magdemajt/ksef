@@ -51,6 +51,20 @@ class OptimaDb:
     def read_connection(self, company: CompanyConfig):
         return self._connect(company, self.cfg.optima.read_user, "sql-read-password")
 
+    def master_connection(self):
+        """Polaczenie do bazy master (wykrywanie baz Optimy na serwerze)."""
+        import mssql_python
+
+        password = self.secrets.get("sql-read-password")
+        conn_str = _connection_string(
+            self.cfg.optima.server,
+            "master",
+            self.cfg.optima.read_user,
+            password,
+            self.cfg.optima.trust_server_certificate,
+        )
+        return mssql_python.connect(conn_str)
+
     def write_connection(self, company: CompanyConfig):
         conn = self._connect(company, self.cfg.optima.write_user, "sql-write-password")
         conn.autocommit = False

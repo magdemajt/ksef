@@ -12,7 +12,8 @@ router = APIRouter()
 
 
 def _render(request: Request, context: AppContext, company_id: str,
-            message: str | None = None, message_ok: bool = True):
+            message: str | None = None, message_ok: bool = True,
+            discovery=None, prefill: dict | None = None):
     if company_id not in context.cfg.companies:
         company_id = context.default_company_id()
     return request.app.state.templates.TemplateResponse(
@@ -22,14 +23,60 @@ def _render(request: Request, context: AppContext, company_id: str,
             "context": context, "company_id": company_id,
             "company": context.company(company_id), "active": "settings",
             "message": message, "message_ok": message_ok,
+            "discovery": discovery, "prefill": prefill or {},
         },
     )
 
 
 @router.get("/settings")
 def settings(request: Request, c: str | None = None, msg: str | None = None,
+             prefill_db: str | None = None, prefill_name: str | None = None,
              context: AppContext = Depends(ctx)):
-    return _render(request, context, c or context.default_company_id(), message=msg)
+    prefill = {}
+    if prefill_db:
+        suggested_id = "".join(
+            ch if ch.isalnum() else "_" for ch in prefill_db.lower().removeprefix("cdn_")
+        ).strip("_")
+        prefill = {
+            "database": prefill_db,
+            "name": prefill_name or "",
+            "company_id": suggested_id,
+        }
+    return _render(request, context, c or context.default_company_id(),
+                   message=msg, prefill=prefill)
+
+
+@router.post("/settings/discover")
+def discover_databases_route(
+    request: Request, c: str = Form(...), csrf: str = Form(...),
+    context: AppContext = Depends(ctx),
+):
+    context.check_csrf(csrf)
+    from app.optima.discovery import discover_databases
+
+    try:
+        conn = context.optima.master_connection()
+    except Exception as exc:  # noqa: BLE001
+        return _render(
+            request, context, c,
+            f"Nie mozna polaczyc z serwerem (baza master): {exc}", False,
+        )
+    try:
+        result = discover_databases(conn)
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001, S110
+            pass
+    configured_dbs = {comp.database for comp in context.cfg.companies.values()}
+    context.audit.log(
+        "databases_discovered", c, environment=context.cfg.ksef.environment,
+        details={"found": [d.name for d in result.company_databases]},
+    )
+    return _render(
+        request, context, c,
+        discovery={"result": result, "configured_dbs": configured_dbs},
+    )
 
 
 # -- konfiguracja globalna KSeF / Optima --

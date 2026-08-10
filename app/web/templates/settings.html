@@ -57,17 +57,64 @@
 </div>
 
 <div class="card">
+    <h3>Wykrywanie baz Optimy</h3>
+    <form method="post" action="/settings/discover" class="inline">
+        <input type="hidden" name="c" value="{{ company_id }}">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <button type="submit">Wykryj bazy na serwerze {{ context.cfg.optima.server }}</button>
+    </form>
+    <span class="muted">Skanuje sys.databases loginem odczytu; bazy firmowe rozpoznaje po tabeli
+        CDN.TraNag, nazwy firm czyta z bazy konfiguracyjnej (CDN_KNF_*).</span>
+    {% if discovery %}
+    {% set res = discovery.result %}
+    {% if res.errors %}
+    {% for err in res.errors %}<p class="error-text">{{ err }}</p>{% endfor %}
+    {% endif %}
+    <table style="margin-top:.6rem">
+        <tr><th>Baza</th><th>Typ</th><th>Firma (z rejestru Optimy)</th><th></th></tr>
+        {% for db in res.databases %}
+        <tr>
+            <td>{{ db.name }}</td>
+            <td>
+                {% if db.kind == 'company' %}<span class="badge b-accepted">firmowa</span>
+                {% elif db.kind == 'config' %}<span class="badge b-new">konfiguracyjna</span>
+                {% elif db.kind == 'no_access' %}<span class="badge b-error">brak dostepu</span>
+                {% else %}<span class="badge b-blocked">inna</span>{% endif %}
+                {% if db.detail %}<div class="error-text" style="font-size:.75rem">{{ db.detail }}</div>{% endif %}
+            </td>
+            <td>{{ db.company_name or '—' }}</td>
+            <td>
+                {% if db.kind == 'company' %}
+                    {% if db.name in discovery.configured_dbs %}
+                    <span class="muted">skonfigurowana</span>
+                    {% else %}
+                    <a class="btn" href="/settings?c={{ company_id }}&prefill_db={{ db.name | urlencode }}&prefill_name={{ (db.company_name or '') | urlencode }}#dodaj-firme">Uzyj</a>
+                    {% endif %}
+                {% endif %}
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="muted">Nie znaleziono baz uzytkownika na serwerze</td></tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+</div>
+
+<div class="card" id="dodaj-firme">
     <h3>Dodaj firme</h3>
     <form method="post" action="/settings/company">
         <input type="hidden" name="c" value="{{ company_id }}">
         <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
         <p>Identyfikator: <input type="text" name="company_id" required pattern="[a-z0-9_]+"
+               value="{{ prefill.get('company_id', '') }}"
                placeholder="np. firma_b" title="male litery, cyfry, podkreslniki">
            &nbsp; NIP: <input type="text" name="nip" required placeholder="10 cyfr"></p>
-        <p>Nazwa: <input type="text" name="name" required size="40" placeholder="Firma B Sp. z o.o."></p>
+        <p>Nazwa: <input type="text" name="name" required size="40"
+               value="{{ prefill.get('name', '') }}" placeholder="Firma B Sp. z o.o."></p>
         <p>Adres (linia 1): <input type="text" name="address_line1" size="30" placeholder="ul. Przykladowa 1">
            &nbsp; (linia 2): <input type="text" name="address_line2" size="25" placeholder="00-001 Warszawa"></p>
-        <p>Baza firmowa Optimy: <input type="text" name="database" required placeholder="CDN_Firma_B"></p>
+        <p>Baza firmowa Optimy: <input type="text" name="database" required
+               value="{{ prefill.get('database', '') }}" placeholder="CDN_Firma_B"></p>
         <p>
             Rejestr VAT zakupu: <input type="text" name="purchase_register" value="ZAKUP" size="10">
             &nbsp; Numeracja Lp:
