@@ -29,6 +29,18 @@ for _f in _pkg_dir.rglob("*"):
         _dest = pathlib.Path("mssql_python") / _f.parent.relative_to(_pkg_dir)
         datas.append((str(_f), str(_dest)))
 
+# binaria sterownika ODBC sa w OSOBNYM pakiecie mssql-python-odbc (od mssql-python
+# 1.13) - pakujemy caly katalog (sterowniki per platforma + zasoby .rll), bo
+# mssql_python szuka ich po sciezce pakietu.
+import mssql_python_odbc as _mssql_odbc
+
+_odbc_dir = pathlib.Path(_mssql_odbc.__file__).parent
+for _f in _odbc_dir.rglob("*"):
+    if _f.is_file() and "__pycache__" not in _f.parts:
+        _dest = pathlib.Path("mssql_python_odbc") / _f.parent.relative_to(_odbc_dir)
+        datas.append((str(_f), str(_dest)))
+hiddenimports.append("mssql_python_odbc")
+
 # nasze zasoby: szablony, statyki, XSD, schema.sql
 datas += [
     ("../app/web/templates", "app/web/templates"),

@@ -132,6 +132,21 @@ def selftest() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"SELFTEST FAILED: sterownik mssql-python nie laduje sie: {exc}")
         return 1
+    # realna proba polaczenia (nieistniejacy host, krotki timeout): brak binariow
+    # ODBC (pakiet mssql-python-odbc) objawia sie tu, a nie przy imporcie
+    try:
+        connect(
+            "Server=127.0.0.1,59999;Database=master;UID=x;PWD=x;"
+            "Encrypt=yes;TrustServerCertificate=yes;Connect Timeout=2"
+        )
+        print("SELFTEST FAILED: polaczenie z nieistniejacym serwerem nie moglo sie udac")
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc)
+        if "mssql-python-odbc" in msg or "not installed" in msg:
+            print(f"SELFTEST FAILED: brak binariow sterownika ODBC w bundlu: {msg}")
+            return 1
+        # oczekiwany blad polaczenia = sterownik zaladowany poprawnie
 
     from importlib import resources
     if not resources.files("app.state").joinpath("schema.sql").is_file():
