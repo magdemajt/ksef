@@ -136,6 +136,13 @@ class AppContext:
         if token != self.csrf_token:
             raise HTTPException(403, "Niepoprawny token CSRF - odswiez strone")
 
+    def reload(self) -> None:
+        """Przeladowuje config.toml po zapisie z GUI (bez restartu procesu)."""
+        from app.config import load_config
+
+        self.cfg = load_config()
+        self._gateways.clear()  # nowe srodowisko/firmy -> swieze klienty KSeF
+
 
 def ctx(request: Request) -> AppContext:
     return request.app.state.ctx

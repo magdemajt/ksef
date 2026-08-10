@@ -131,8 +131,13 @@ def _apply_env_overrides(data: dict) -> dict:
     return data
 
 
+def config_path() -> Path:
+    """Sciezka pliku konfiguracji uzywana przez load_config (env albo ./config.toml)."""
+    return Path(os.environ.get(CONFIG_ENV_VAR, DEFAULT_CONFIG_PATH))
+
+
 def load_config(path: Path | None = None) -> AppConfig:
-    cfg_path = path or Path(os.environ.get(CONFIG_ENV_VAR, DEFAULT_CONFIG_PATH))
+    cfg_path = path or config_path()
     if not cfg_path.exists():
         raise FileNotFoundError(
             f"Brak pliku konfiguracji: {cfg_path}. Skopiuj config.toml.example do config.toml "

@@ -2,17 +2,100 @@
 {% block title %}Ustawienia — ksef-bridge{% endblock %}
 {% block content %}
 <h1>Ustawienia</h1>
+
+{% if message %}
 <div class="card">
-    <h3>Firma: {{ company.name }}</h3>
-    <p>NIP: {{ company.nip }} · Baza: {{ company.database }} ·
-       Rejestr zakupu: {{ company.purchase_register }} ·
-       Numeracja Lp: {{ company.lp_numbering }} ·
-       Metoda auth: {{ company.auth_method }}</p>
-    <p class="muted">Zmiany konfiguracji: edytuj config.toml i zrestartuj aplikacje.
-       Sekrety: <code>ksef-bridge secrets set ...</code></p>
+    <p class="{% if message_ok %}muted{% else %}error-text{% endif %}"><strong>{{ message }}</strong></p>
 </div>
+{% endif %}
+
 <div class="card">
-    <h3>Testy polaczen</h3>
+    <h3>Konfiguracja KSeF i serwera Optimy</h3>
+    <form method="post" action="/settings/ksef">
+        <input type="hidden" name="c" value="{{ company_id }}">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <p>
+            Srodowisko KSeF:
+            <select name="environment">
+                {% for env in ['test', 'demo', 'prod'] %}
+                <option value="{{ env }}" {% if context.cfg.ksef.environment == env %}selected{% endif %}>{{ env | upper }}</option>
+                {% endfor %}
+            </select>
+            &nbsp; <label><input type="checkbox" name="allow_prod_send"
+                {% if context.cfg.ksef.allow_prod_send %}checked{% endif %}>
+                zezwol na wysylke produkcyjna</label>
+        </p>
+        <p>Serwer MS SQL: <input type="text" name="optima_server" value="{{ context.cfg.optima.server }}" size="30" placeholder="host,1433"></p>
+        <p>Login odczytu: <input type="text" name="read_user" value="{{ context.cfg.optima.read_user }}">
+           &nbsp; Login zapisu: <input type="text" name="write_user" value="{{ context.cfg.optima.write_user }}"></p>
+        <p>Haslo odczytu: <input type="password" name="sql_read_password" placeholder="(bez zmian)" autocomplete="new-password">
+           &nbsp; Haslo zapisu: <input type="password" name="sql_write_password" placeholder="(bez zmian)" autocomplete="new-password"></p>
+        <p class="muted">Hasla trafiaja do keyringa systemowego, nie do pliku konfiguracji.
+           Zmiana srodowiska przelacza wszystkie firmy (tokeny KSeF sa per srodowisko).</p>
+        <p><button type="submit">Zapisz konfiguracje</button></p>
+    </form>
+</div>
+
+<div class="card">
+    <h3>Firmy</h3>
+    <table>
+        <tr><th>Id</th><th>Nazwa</th><th>NIP</th><th>Baza Optimy</th><th>Auth</th><th>Rejestr zakupu</th><th>Zapisy SQL</th></tr>
+        {% for cid, comp in context.cfg.companies.items() %}
+        <tr>
+            <td>{{ cid }}</td>
+            <td>{{ comp.name }}</td>
+            <td>{{ comp.nip }}</td>
+            <td>{{ comp.database }}</td>
+            <td>{{ comp.auth_method }}</td>
+            <td>{{ comp.purchase_register }}</td>
+            <td>{% if comp.writes_enabled %}<span class="badge b-accepted">wlaczone</span>
+                {% else %}<span class="badge b-blocked">wylaczone</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+
+<div class="card">
+    <h3>Dodaj firme</h3>
+    <form method="post" action="/settings/company">
+        <input type="hidden" name="c" value="{{ company_id }}">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <p>Identyfikator: <input type="text" name="company_id" required pattern="[a-z0-9_]+"
+               placeholder="np. firma_b" title="male litery, cyfry, podkreslniki">
+           &nbsp; NIP: <input type="text" name="nip" required placeholder="10 cyfr"></p>
+        <p>Nazwa: <input type="text" name="name" required size="40" placeholder="Firma B Sp. z o.o."></p>
+        <p>Adres (linia 1): <input type="text" name="address_line1" size="30" placeholder="ul. Przykladowa 1">
+           &nbsp; (linia 2): <input type="text" name="address_line2" size="25" placeholder="00-001 Warszawa"></p>
+        <p>Baza firmowa Optimy: <input type="text" name="database" required placeholder="CDN_Firma_B"></p>
+        <p>
+            Rejestr VAT zakupu: <input type="text" name="purchase_register" value="ZAKUP" size="10">
+            &nbsp; Numeracja Lp:
+            <select name="lp_numbering">
+                <option value="month">miesieczna</option>
+                <option value="year">roczna</option>
+            </select>
+        </p>
+        <p>
+            Uwierzytelnienie KSeF:
+            <select name="auth_method" onchange="document.getElementById('cert-row').style.display = this.value === 'ksef_cert' ? '' : 'none'; document.getElementById('token-row').style.display = this.value === 'token' ? '' : 'none';">
+                <option value="token">token KSeF</option>
+                <option value="ksef_cert">certyfikat KSeF (.p12)</option>
+            </select>
+        </p>
+        <p id="token-row">Token KSeF: <input type="password" name="ksef_token" size="40"
+               placeholder="(opcjonalnie - mozna ustawic pozniej)" autocomplete="new-password">
+           <span class="muted">dla srodowiska: {{ context.cfg.ksef.environment | upper }}</span></p>
+        <p id="cert-row" style="display:none">
+            Sciezka .p12: <input type="text" name="ksef_cert_path" size="40" placeholder="/sciezka/do/cert.p12">
+            &nbsp; Haslo .p12: <input type="password" name="p12_password" autocomplete="new-password"></p>
+        <p class="muted">Token/haslo trafiaja do keyringa. Zapisy SQL do Optimy startuja wylaczone
+           (writes_enabled=false) - wlaczenie wymaga procedury z README (etap M5).</p>
+        <p><button type="submit">Dodaj firme</button></p>
+    </form>
+</div>
+
+<div class="card">
+    <h3>Testy polaczen (firma: {{ company.name }})</h3>
     <form method="post" action="/settings/test-optima" class="inline">
         <input type="hidden" name="c" value="{{ company_id }}">
         <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
@@ -23,8 +106,5 @@
         <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
         <button type="submit">Test uwierzytelnienia KSeF</button>
     </form>
-    {% if test_result %}
-    <p class="{% if test_ok %}muted{% else %}error-text{% endif %}"><strong>{{ test_result }}</strong></p>
-    {% endif %}
 </div>
 {% endblock %}

@@ -1,28 +1,143 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import RedirectResponse
 
+from app import configstore
+from app.config import KsefEnv
+from app.secrets import SecretStore
 from app.web.deps import AppContext, ctx
 
 router = APIRouter()
 
 
 def _render(request: Request, context: AppContext, company_id: str,
-            test_result: str | None = None, test_ok: bool = True):
+            message: str | None = None, message_ok: bool = True):
+    if company_id not in context.cfg.companies:
+        company_id = context.default_company_id()
     return request.app.state.templates.TemplateResponse(
         request,
         "settings.html",
         {
             "context": context, "company_id": company_id,
             "company": context.company(company_id), "active": "settings",
-            "test_result": test_result, "test_ok": test_ok,
+            "message": message, "message_ok": message_ok,
         },
     )
 
 
 @router.get("/settings")
-def settings(request: Request, c: str | None = None, context: AppContext = Depends(ctx)):
-    return _render(request, context, c or context.default_company_id())
+def settings(request: Request, c: str | None = None, msg: str | None = None,
+             context: AppContext = Depends(ctx)):
+    return _render(request, context, c or context.default_company_id(), message=msg)
+
+
+# -- konfiguracja globalna KSeF / Optima --
+
+
+@router.post("/settings/ksef")
+def save_ksef_config(
+    request: Request,
+    c: str = Form(...),
+    csrf: str = Form(...),
+    environment: str = Form(...),
+    allow_prod_send: str = Form(""),
+    optima_server: str = Form(...),
+    read_user: str = Form(...),
+    write_user: str = Form(...),
+    sql_read_password: str = Form(""),
+    sql_write_password: str = Form(""),
+    context: AppContext = Depends(ctx),
+):
+    context.check_csrf(csrf)
+    try:
+        if environment not in [e.value for e in KsefEnv]:
+            raise configstore.ConfigStoreError(f"Nieznane srodowisko: {environment}")
+        configstore.update_global(
+            ksef={"environment": environment, "allow_prod_send": allow_prod_send == "on"},
+            optima={
+                "server": optima_server.strip(),
+                "read_user": read_user.strip(),
+                "write_user": write_user.strip(),
+            },
+        )
+        store = SecretStore()
+        if sql_read_password:
+            store.set("sql-read-password", sql_read_password)
+        if sql_write_password:
+            store.set("sql-write-password", sql_write_password)
+        context.reload()
+        context.audit.log(
+            "config_updated", c, "config", "ksef+optima", environment,
+            {"environment": environment, "server": optima_server},
+        )
+        return _render(request, context, c, "Konfiguracja zapisana i przeladowana", True)
+    except configstore.ConfigStoreError as exc:
+        return _render(request, context, c, str(exc), False)
+
+
+# -- dodawanie firmy --
+
+
+@router.post("/settings/company")
+def add_company(
+    request: Request,
+    c: str = Form(...),
+    csrf: str = Form(...),
+    company_id: str = Form(...),
+    nip: str = Form(...),
+    name: str = Form(...),
+    database: str = Form(...),
+    address_line1: str = Form(""),
+    address_line2: str = Form(""),
+    auth_method: str = Form("token"),
+    ksef_cert_path: str = Form(""),
+    purchase_register: str = Form("ZAKUP"),
+    lp_numbering: str = Form("month"),
+    ksef_token: str = Form(""),
+    p12_password: str = Form(""),
+    context: AppContext = Depends(ctx),
+):
+    context.check_csrf(csrf)
+    company_id = company_id.strip().lower()
+    try:
+        if auth_method == "ksef_cert" and not ksef_cert_path.strip():
+            raise configstore.ConfigStoreError(
+                "auth_method=ksef_cert wymaga sciezki do pliku .p12"
+            )
+        configstore.add_company(
+            company_id,
+            {
+                "nip": nip.strip(),
+                "name": name.strip(),
+                "database": database.strip(),
+                "address_line1": address_line1.strip(),
+                "address_line2": address_line2.strip(),
+                "auth_method": auth_method,
+                "ksef_cert_path": ksef_cert_path.strip(),
+                "purchase_register": purchase_register.strip() or "ZAKUP",
+                "lp_numbering": lp_numbering,
+            },
+        )
+        store = SecretStore()
+        env = context.cfg.ksef.environment
+        if ksef_token:
+            store.set(SecretStore.ksef_token_key(company_id, env), ksef_token)
+        if p12_password:
+            store.set(SecretStore.p12_pass_key(company_id), p12_password)
+        context.reload()
+        context.audit.log(
+            "company_added", company_id, "company", company_id,
+            context.cfg.ksef.environment, {"nip": nip.strip(), "database": database.strip()},
+        )
+        return RedirectResponse(
+            f"/settings?c={company_id}&msg=Firma+{company_id}+dodana", status_code=303
+        )
+    except configstore.ConfigStoreError as exc:
+        return _render(request, context, c, str(exc), False)
+
+
+# -- testy polaczen --
 
 
 @router.post("/settings/test-optima")
