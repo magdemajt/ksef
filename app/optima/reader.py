@@ -91,13 +91,13 @@ class SalesReader:
                    FP.FPl_Nazwa,
                    K.Knt_KntId, K.Knt_Kod, K.Knt_Nip, K.Knt_Nazwa1, K.Knt_Nazwa2, K.Knt_Nazwa3,
                    K.Knt_Ulica, K.Knt_Miasto, K.Knt_KodPocztowy,
+                   ISNULL(T.TrN_Bufor, 0),
                    {', '.join(select_extra)}
             FROM CDN.TraNag T
             LEFT JOIN CDN.Kontrahenci K
                    ON K.Knt_KntId = T.TrN_PodID AND T.TrN_PodmiotTyp = 1
             LEFT JOIN CDN.FormyPlatnosci FP ON FP.FPl_FPlId = T.TrN_FPlId
             WHERE T.TrN_TypDokumentu = ?
-              AND T.TrN_Bufor = 0
               AND ISNULL(T.TrN_Anulowany, 0) = 0
               AND T.TrN_DataDok BETWEEN ? AND ?
             ORDER BY T.TrN_DataDok DESC, T.TrN_TrNID DESC
@@ -123,12 +123,12 @@ class SalesReader:
                    NULL,
                    K.Knt_KntId, K.Knt_Kod, K.Knt_Nip, K.Knt_Nazwa1, NULL, NULL,
                    NULL, NULL, NULL,
+                   ISNULL(T.TrN_Bufor, 0),
                    'PLN', NULL, NULL, NULL, NULL
             FROM CDN.TraNag T
             LEFT JOIN CDN.Kontrahenci K
                    ON K.Knt_KntId = T.TrN_PodID AND T.TrN_PodmiotTyp = 1
             WHERE T.TrN_TypDokumentu = ?
-              AND T.TrN_Bufor = 0
               AND ISNULL(T.TrN_Anulowany, 0) = 0
               AND T.TrN_DataDok BETWEEN ? AND ?
             ORDER BY T.TrN_DataDok DESC, T.TrN_TrNID DESC
@@ -142,7 +142,7 @@ class SalesReader:
             trn_id, numer, data_dok, data_wys, termin,
             netto, vat, brutto, korekta, fpl_nazwa,
             knt_id, knt_kod, knt_nip, n1, n2, n3,
-            ulica, miasto, kod_p,
+            ulica, miasto, kod_p, bufor,
             waluta, kurs_l, kurs_m, ksef_nr, ksef_status,
         ) = row
         buyer = None
@@ -172,6 +172,7 @@ class SalesReader:
             kurs_l=Decimal(str(kurs_m)) if kurs_m else None,
             forma_platnosci=fpl_nazwa,
             buyer=buyer,
+            bufor=bool(bufor),
             optima_ksef_number=(ksef_nr or None),
             optima_ksef_status=(str(ksef_status) if ksef_status is not None else None),
         )

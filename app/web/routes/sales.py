@@ -59,7 +59,9 @@ def sales_list(
     for inv in invoices:
         row = {"inv": inv, "selectable": True, "badge": "blocked", "label": "niewyslana",
                "detail": None, "ksef_number": None, "upo": False}
-        if inv.optima_ksef_number:
+        if inv.bufor:
+            row.update(selectable=False, badge="draft", label="draft (w buforze)")
+        elif inv.optima_ksef_number:
             row.update(selectable=False, badge="blocked", label="wyslana z Optimy",
                        ksef_number=inv.optima_ksef_number)
         elif inv.korekta:

@@ -31,6 +31,9 @@ STATUS_DUPLICATE = 440
 
 
 class SendService:
+    # odstep miedzy probami pobrania UPO po zamknieciu sesji (nadpisywany w testach)
+    UPO_RETRY_DELAY_S = 10.0
+
     def __init__(
         self,
         company_id: str,
@@ -111,7 +114,7 @@ class SendService:
         for _attempt in range(12):
             if not pending:
                 break
-            time.sleep(10)
+            time.sleep(self.UPO_RETRY_DELAY_S)
             for trn_id, invoice_ref in list(pending.items()):
                 try:
                     upo = self.gateway.fetch_upo(session_ref, invoice_ref)

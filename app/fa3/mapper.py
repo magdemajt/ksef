@@ -133,6 +133,10 @@ def map_invoice(
     seller_address_l2: str,
     seller_country: str = "PL",
 ) -> Fa3Invoice:
+    if inv.bufor:
+        raise MappingError(
+            "Faktura w buforze Optimy (draft) - zatwierdz dokument przed wysylka do KSeF"
+        )
     if inv.korekta:
         raise MappingError("Faktury korygujace sa poza zakresem v1")
     if inv.optima_ksef_number:

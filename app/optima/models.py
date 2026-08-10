@@ -55,6 +55,8 @@ class SalesInvoice:
     kurs_l: Decimal | None
     forma_platnosci: str | None
     buyer: Contractor | None
+    # dokument w buforze Optimy (TrN_Bufor=1) = draft; widoczny, nigdy nie wysylany
+    bufor: bool = False
     lines: list[SalesLine] = field(default_factory=list)
     # status KSeF odczytany z kolumn Optimy (jesli istnieja) - blokuje podwojna wysylke
     optima_ksef_number: str | None = None
