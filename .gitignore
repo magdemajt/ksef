@@ -12,3 +12,6 @@ invoices/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
+packaging/build/
+packaging/dist/
+nohup.out

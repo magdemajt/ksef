@@ -20,6 +20,30 @@ tokenem KSeF lub certyfikatem KSeF.
   (`ksef_writer`, INSERT wyłącznie na `CDN.VatNag`, `CDN.VatTab`, `CDN.BnkZdarzenia`)
 - token KSeF albo certyfikat KSeF (.p12) dla każdej firmy
 
+## Wersja spakowana (Windows / Linux, bez instalacji Pythona)
+
+Aplikację można zbudować jako samodzielny program (PyInstaller):
+
+```bash
+pip install -e .[dev]
+cd packaging && pyinstaller ksef-bridge.spec --noconfirm
+./dist/ksef-bridge/ksef-bridge --selftest   # weryfikacja bundla
+```
+
+Wynik: katalog `packaging/dist/ksef-bridge/` z programem `ksef-bridge`
+(`ksef-bridge.exe` na Windows) — do skopiowania/rozpakowania u użytkownika
+i uruchomienia podwójnym kliknięciem. Uwaga: build trzeba wykonać **na docelowym
+systemie** (PyInstaller nie cross-kompiluje). Workflow GitHub Actions
+(`.github/workflows/build.yml`) buduje obie wersje automatycznie — ręcznie
+(workflow_dispatch) albo przy tagu `v*` z gotowym release (zip + tar.gz).
+
+Pierwsze uruchomienie: program tworzy `config.toml` z przykładową firmą
+(Linux: `~/.config/ksef-bridge/`, Windows: `%APPDATA%\ksef-bridge\`), startuje
+serwer i otwiera przeglądarkę na stronie Ustawień — dane firmy, serwer SQL
+i sekrety uzupełnia się w GUI. Sekrety lądują w keyringu systemowym
+(Windows: Menedżer poświadczeń; Linux: GNOME Keyring/Secret Service — na
+serwerze bez środowiska graficznego użyj zmiennych `KSEF_BRIDGE_SECRET_*`).
+
 ## Instalacja
 
 ```bash

@@ -1,0 +1,73 @@
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  bundle:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            artifact: ksef-bridge-linux-x64
+          - os: windows-latest
+            artifact: ksef-bridge-windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pyinstaller
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -q
+
+      - name: Build bundle
+        working-directory: packaging
+        run: pyinstaller ksef-bridge.spec --noconfirm
+
+      - name: Selftest bundle (Linux)
+        if: runner.os == 'Linux'
+        run: ./packaging/dist/ksef-bridge/ksef-bridge --selftest
+
+      - name: Selftest bundle (Windows)
+        if: runner.os == 'Windows'
+        run: .\packaging\dist\ksef-bridge\ksef-bridge.exe --selftest
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: packaging/dist/ksef-bridge/
+
+  release:
+    needs: bundle
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Pack archives
+        run: |
+          cd artifacts
+          zip -qr ../ksef-bridge-windows-x64.zip ksef-bridge-windows-x64
+          tar czf ../ksef-bridge-linux-x64.tar.gz ksef-bridge-linux-x64
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ksef-bridge-windows-x64.zip
+            ksef-bridge-linux-x64.tar.gz

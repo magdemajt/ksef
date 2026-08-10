@@ -22,10 +22,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.5"]
+dev = ["pytest>=8", "ruff>=0.5", "pyinstaller>=6"]
 
 [project.scripts]
 ksef-bridge = "app.cli:main"
+ksef-bridge-desktop = "app.desktop:main"
 
 [build-system]
 requires = ["setuptools>=68"]
