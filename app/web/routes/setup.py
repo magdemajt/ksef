@@ -20,7 +20,8 @@ router = APIRouter()
 
 
 def _render(request: Request, context: AppContext, message: str | None = None,
-            message_ok: bool = True, discovery=None, step: int | None = None):
+            message_ok: bool = True, discovery=None, step: int | None = None,
+            prefill: dict | None = None):
     status = get_setup_status(context)
     return request.app.state.templates.TemplateResponse(
         request,
@@ -35,14 +36,25 @@ def _render(request: Request, context: AppContext, message: str | None = None,
             "message": message, "message_ok": message_ok,
             "discovery": discovery,
             "placeholder_nip": PLACEHOLDER_NIP,
+            "prefill": prefill or {},
         },
     )
 
 
 @router.get("/setup")
 def setup_view(request: Request, step: int | None = None,
+               prefill_db: str | None = None, prefill_name: str | None = None,
                context: AppContext = Depends(ctx)):
-    return _render(request, context, step=step)
+    prefill = {}
+    if prefill_db:
+        prefill = {
+            "database": prefill_db,
+            "name": prefill_name or "",
+            "company_id": "".join(
+                ch if ch.isalnum() else "_" for ch in prefill_db.lower().removeprefix("cdn_")
+            ).strip("_"),
+        }
+    return _render(request, context, step=step, prefill=prefill)
 
 
 # -- krok 1: serwer SQL --

@@ -100,7 +100,7 @@ ALTER ROLE db_datareader ADD MEMBER ksef_reader;</pre>
     {% set res = discovery.result %}
     {% for err in res.errors %}<p class="error-text">{{ err }}</p>{% endfor %}
     <table style="margin-top:.6rem">
-        <tr><th>Baza</th><th>Typ</th><th>Firma</th></tr>
+        <tr><th>Baza</th><th>Typ</th><th>Firma</th><th></th></tr>
         {% for db in res.databases %}
         <tr>
             <td>{{ db.name }}</td>
@@ -109,29 +109,46 @@ ALTER ROLE db_datareader ADD MEMBER ksef_reader;</pre>
                 {% elif db.kind == 'no_access' %}<span class="badge b-error">brak dostepu</span>
                 {% else %}<span class="badge b-blocked">inna</span>{% endif %}</td>
             <td>{{ db.company_name or '—' }}</td>
+            <td>
+                {% if db.kind == 'company' %}
+                    {% if db.name in discovery.configured_dbs %}
+                    <span class="muted">skonfigurowana</span>
+                    {% else %}
+                    <a class="btn" href="/setup?step=2&prefill_db={{ db.name | urlencode }}&prefill_name={{ (db.company_name or '') | urlencode }}#formularz-firmy">Uzyj</a>
+                    {% endif %}
+                {% endif %}
+            </td>
         </tr>
         {% endfor %}
     </table>
+    {% if res.databases | selectattr('kind', 'equalto', 'no_access') | list %}
+    <p class="muted" style="margin-top:.5rem">„Brak dostepu" = login odczytu nie ma usera w tej
+       bazie. Dostep nadajesz tylko bazom, ktore chcesz obslugiwac (SSMS):<br>
+       <code>USE [nazwa_bazy]; CREATE USER ksef_reader FOR LOGIN ksef_reader;
+       ALTER ROLE db_datareader ADD MEMBER ksef_reader;</code><br>
+       Dostep do bazy konfiguracyjnej (CDN_KNF_*) jest opcjonalny — daje nazwy firm w tabeli wyzej.</p>
+    {% endif %}
     {% endif %}
 
     {% set edit_cid = status.placeholder_companies[0] if status.placeholder_companies else '' %}
-    <h4 style="margin-top:1rem">{% if edit_cid %}Uzupelnij dane firmy{% else %}Dodaj firme{% endif %}</h4>
+    <h4 style="margin-top:1rem" id="formularz-firmy">{% if edit_cid %}Uzupelnij dane firmy{% else %}Dodaj firme{% endif %}</h4>
     <form method="post" action="/setup/company">
         <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
         <p>Identyfikator: <input type="text" name="company_id" required pattern="[a-z0-9_]+"
-               value="{{ edit_cid }}" {% if edit_cid %}readonly{% endif %} placeholder="np. firma_a">
+               value="{{ edit_cid or prefill.get('company_id', '') }}"
+               {% if edit_cid %}readonly{% endif %} placeholder="np. firma_a">
            &nbsp; NIP: <input type="text" name="nip" required placeholder="10 cyfr"
                value="{% if edit_cid and context.cfg.companies[edit_cid].nip != placeholder_nip %}{{ context.cfg.companies[edit_cid].nip }}{% endif %}"></p>
         <p>Nazwa: <input type="text" name="name" required size="40"
-               value="{% if edit_cid %}{{ context.cfg.companies[edit_cid].name }}{% endif %}"></p>
+               value="{{ prefill.get('name') or (context.cfg.companies[edit_cid].name if edit_cid else '') }}"></p>
         <p>Adres (linia 1): <input type="text" name="address_line1" size="30"
                value="{% if edit_cid %}{{ context.cfg.companies[edit_cid].address_line1 }}{% endif %}">
            &nbsp; (linia 2): <input type="text" name="address_line2" size="25"
                value="{% if edit_cid %}{{ context.cfg.companies[edit_cid].address_line2 }}{% endif %}"></p>
         <p>Baza firmowa: <input type="text" name="database" required
-               value="{% if edit_cid %}{{ context.cfg.companies[edit_cid].database }}{% endif %}"
+               value="{{ prefill.get('database') or (context.cfg.companies[edit_cid].database if edit_cid else '') }}"
                placeholder="CDN_Firma">
-           <span class="muted">(nazwa z tabeli wykrywania powyzej)</span></p>
+           <span class="muted">(kliknij „Uzyj" przy bazie w tabeli wyzej albo wpisz recznie)</span></p>
         <p>Rejestr VAT zakupu: <input type="text" name="purchase_register" size="10"
                value="{% if edit_cid %}{{ context.cfg.companies[edit_cid].purchase_register }}{% else %}ZAKUP{% endif %}">
            &nbsp; Numeracja Lp:
