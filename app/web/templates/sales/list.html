@@ -2,6 +2,14 @@
 {% block title %}Sprzedaz — ksef-bridge{% endblock %}
 {% block content %}
 <h1>Faktury sprzedazy</h1>
+{% if optima_error %}
+<div class="card">
+    <p class="error-text"><strong>Brak polaczenia z baza Optimy:</strong> {{ optima_error }}</p>
+    <p class="muted">Uzupelnij <code>server</code> i <code>database</code> w config.toml oraz ustaw
+       haslo: <code>ksef-bridge secrets set sql-read-password</code>. Test polaczenia:
+       <a href="/settings?c={{ company_id }}">Ustawienia</a>.</p>
+</div>
+{% endif %}
 <form method="get" action="/sales" class="card">
     <input type="hidden" name="c" value="{{ company_id }}">
     Od: <input type="date" name="date_from" value="{{ date_from }}">

@@ -46,8 +46,13 @@ def sales_list(
     date_from, date_to = date_from or df, date_to or dt
     env = context.cfg.ksef.environment
 
-    reader = context.sales_reader(company_id)
-    invoices = reader.list_sales(date.fromisoformat(date_from), date.fromisoformat(date_to))
+    optima_error = None
+    invoices = []
+    try:
+        reader = context.sales_reader(company_id)
+        invoices = reader.list_sales(date.fromisoformat(date_from), date.fromisoformat(date_to))
+    except Exception as exc:  # noqa: BLE001
+        optima_error = str(exc)
     local = context.sent.statuses_for(company_id, env)
 
     rows = []
@@ -78,6 +83,7 @@ def sales_list(
         {
             "context": context, "company_id": company_id, "company": company,
             "active": "sales", "rows": rows, "date_from": date_from, "date_to": date_to,
+            "optima_error": optima_error,
         },
     )
 
