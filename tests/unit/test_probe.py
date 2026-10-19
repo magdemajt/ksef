@@ -14,7 +14,16 @@ def test_diff_shows_changed_tranag_columns_and_new_ksef_rows():
         ],
     }
     changes = diff_probes(before, after)
-    assert changes["tranag_changed"] == [
-        {"column": "TrN_KSeFNumer", "before": None, "after": "5265877635-20261001-ABC"}
+    assert changes["changed"] == [
+        {"table": "TraNag", "column": "TrN_KSeFNumer", "before": None, "after": "5265877635-20261001-ABC"}
     ]
     assert changes["dokumenty_ksef_new"] == [after["dokumenty_ksef"][0]]
+
+
+def test_diff_includes_linked_vat_register_row():
+    before = {"tranag": {"TrN_NrKSeF": ""}, "linked": {"VatNag": [{"VaN_NrKSeF": ""}]}}
+    after = {"tranag": {"TrN_NrKSeF": "X"}, "linked": {"VatNag": [{"VaN_NrKSeF": "X"}]}}
+    assert diff_probes(before, after)["changed"] == [
+        {"table": "TraNag", "column": "TrN_NrKSeF", "before": "", "after": "X"},
+        {"table": "VatNag", "column": "VaN_NrKSeF", "before": "", "after": "X"},
+    ]

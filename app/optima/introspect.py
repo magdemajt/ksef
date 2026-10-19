@@ -126,6 +126,55 @@ def run_diagnose(conn) -> dict:
         if any(h in c.lower() for h in ("mpp", "podziel", "split"))
     )
 
+    # slownik statusow KSeF Optimy z istniejacych dokumentow - jakie wartosci ustawia
+    # modul KSeF (wysylka z Optimy / reczne wpisanie numeru); baza pod zapis numeru KSeF
+    try:
+        cur.execute(
+            "SELECT TrN_TypDokumentu, TrN_KSeFStatusId, CAST(TrN_KSeFStatus AS NVARCHAR(200)), "
+            "TrN_KSeFTypSrodowiska, COUNT(*), "
+            "SUM(CASE WHEN ISNULL(TrN_NrKSeF, '') <> '' THEN 1 ELSE 0 END), MAX(TrN_TrNID) "
+            "FROM CDN.TraNag GROUP BY TrN_TypDokumentu, TrN_KSeFStatusId, "
+            "CAST(TrN_KSeFStatus AS NVARCHAR(200)), TrN_KSeFTypSrodowiska "
+            "ORDER BY TrN_TypDokumentu, TrN_KSeFStatusId"
+        )
+        report["ksef_status_values"] = [
+            {
+                "typ_dokumentu": typ, "status_id": sid, "status": st, "srodowisko": env,
+                "dokumentow": cnt, "z_numerem_ksef": with_nr, "przyklad_trn_id": example,
+            }
+            for typ, sid, st, env, cnt, with_nr, example in _rows(cur)
+        ]
+    except Exception as exc:
+        report["ksef_status_values"] = f"blad: {exc}"
+
+    # czy Optima uzupelnia numer KSeF w rejestrze VAT (JPK_V7 bierze go z VatNag)
+    try:
+        cur.execute(
+            "SELECT VaN_Typ, COUNT(*), "
+            "SUM(CASE WHEN ISNULL(VaN_NrKSeF, '') <> '' THEN 1 ELSE 0 END) "
+            "FROM CDN.VatNag GROUP BY VaN_Typ ORDER BY VaN_Typ"
+        )
+        report["vat_register_ksef"] = [
+            {"van_typ": typ, "wpisow": cnt, "z_numerem_ksef": with_nr}
+            for typ, cnt, with_nr in _rows(cur)
+        ]
+    except Exception as exc:
+        report["vat_register_ksef"] = f"blad: {exc}"
+
+    # tresc triggerow na tabelach, ktore zmieni zapis numeru KSeF (NULL = brak
+    # uprawnienia VIEW DEFINITION albo trigger zaszyfrowany)
+    try:
+        cur.execute(
+            "SELECT OBJECT_NAME(parent_id), name, OBJECT_DEFINITION(object_id) "
+            "FROM sys.triggers WHERE parent_id IN "
+            "(OBJECT_ID('CDN.TraNag'), OBJECT_ID('CDN.VatNag'), OBJECT_ID('CDN.DokumentyKSeF'))"
+        )
+        report["trigger_definitions"] = [
+            {"table": t, "name": n, "definition": d} for t, n, d in _rows(cur)
+        ]
+    except Exception as exc:
+        report["trigger_definitions"] = f"blad: {exc}"
+
     # probka 5 najnowszych faktur (tylko naglowki, do porownania z UI)
     try:
         cur.execute(
@@ -157,8 +206,24 @@ def _plain(value) -> str | None:
     return str(value)
 
 
+# Tabele powiazane z faktura, w ktorych Optima trzyma kopie numeru KSeF:
+# tabela -> (kolumna FK na TraNag, klucz glowny tabeli)
+LINKED_TABLES = {
+    "VatNag": ("TrN_VaNId", "VaN_VaNID"),
+    "DekretyNag": ("TrN_DekId", "DeN_DeNId"),
+    "ZapisyKPR": ("TrN_KPRID", "KPR_KPRID"),
+    "Ryczalt": ("TrN_RycID", "RYC_RycID"),
+}
+
+
+def _dicts(cur) -> list[dict]:
+    cols = [d[0] for d in cur.description]
+    return [{c: _plain(v) for c, v in zip(cols, r)} for r in cur.fetchall()]
+
+
 def probe_invoice(conn, numer: str) -> dict:
-    """Pelny wiersz TraNag faktury sprzedazy + najnowsze wiersze CDN.DokumentyKSeF.
+    """Pelny wiersz TraNag faktury sprzedazy + wiersze powiazane (rejestr VAT, dekret,
+    KPiR/ryczalt, DokumentyKSeF).
 
     Porownanie dwoch sond (przed/po recznym wpisaniu numeru KSeF w Optimie) pokazuje,
     ktore kolumny Optima ustawia - snapshot/diff widzi tylko nowe wiersze, nie UPDATE.
@@ -168,37 +233,53 @@ def probe_invoice(conn, numer: str) -> dict:
         "SELECT * FROM CDN.TraNag WHERE TrN_NumerPelny = ? AND TrN_TypDokumentu = 302",
         (numer,),
     )
-    cols = [d[0] for d in cur.description]
-    row = cur.fetchone()
-    result: dict = {"numer": numer, "tranag": None, "dokumenty_ksef": []}
-    if row is None:
+    rows = _dicts(cur)
+    result: dict = {"numer": numer, "tranag": None, "linked": {}, "dokumenty_ksef": []}
+    if not rows:
         return result
-    result["tranag"] = {c: _plain(v) for c, v in zip(cols, row)}
+    tranag = result["tranag"] = rows[0]
+    for table, (fk, pk) in LINKED_TABLES.items():
+        if not tranag.get(fk):
+            continue
+        try:
+            cur.execute(f"SELECT * FROM CDN.{table} WHERE {pk} = ?", (int(tranag[fk]),))
+            result["linked"][table] = _dicts(cur)
+        except Exception as exc:
+            result["linked"][table] = [{"_blad": str(exc)}]
     try:
-        cur.execute("SELECT TOP 5 * FROM CDN.DokumentyKSeF ORDER BY 1 DESC")
-        dcols = [d[0] for d in cur.description]
-        result["dokumenty_ksef"] = [
-            {c: _plain(v) for c, v in zip(dcols, r)} for r in cur.fetchall()
-        ]
+        # wiersze przypiete do faktury + najnowsze (gdyby Optima nie ustawiala DKF_TrNId)
+        cur.execute(
+            "SELECT * FROM CDN.DokumentyKSeF WHERE DKF_TrNId = ? OR DKF_DKFID IN "
+            "(SELECT TOP 5 DKF_DKFID FROM CDN.DokumentyKSeF ORDER BY DKF_DKFID DESC) "
+            "ORDER BY DKF_DKFID DESC",
+            (int(tranag["TrN_TrNID"]),),
+        )
+        result["dokumenty_ksef"] = _dicts(cur)
     except Exception as exc:
         result["dokumenty_ksef_error"] = str(exc)
     return result
 
 
-def diff_probes(before: dict, after: dict) -> dict:
-    """Zmienione kolumny TraNag i nowe wiersze DokumentyKSeF miedzy dwiema sondami."""
-    old_row, new_row = before.get("tranag") or {}, after.get("tranag") or {}
-    changed = [
-        {"column": c, "before": old_row.get(c), "after": new_row.get(c)}
+def _row_changes(table: str, old_row: dict, new_row: dict) -> list[dict]:
+    return [
+        {"table": table, "column": c, "before": old_row.get(c), "after": new_row.get(c)}
         for c in new_row
         if old_row.get(c) != new_row.get(c)
     ]
+
+
+def diff_probes(before: dict, after: dict) -> dict:
+    """Zmienione kolumny TraNag i tabel powiazanych + nowe wiersze DokumentyKSeF."""
+    changed = _row_changes("TraNag", before.get("tranag") or {}, after.get("tranag") or {})
+    for table, rows in (after.get("linked") or {}).items():
+        old_rows = (before.get("linked") or {}).get(table) or [{}]
+        changed += _row_changes(table, old_rows[0], rows[0] if rows else {})
     old_ksef = {json.dumps(r, sort_keys=True) for r in before.get("dokumenty_ksef", [])}
     new_ksef = [
         r for r in after.get("dokumenty_ksef", [])
         if json.dumps(r, sort_keys=True) not in old_ksef
     ]
-    return {"tranag_changed": changed, "dokumenty_ksef_new": new_ksef}
+    return {"changed": changed, "dokumenty_ksef_new": new_ksef}
 
 
 # -- snapshot / diff --

@@ -394,7 +394,24 @@ def probe_invoice_route(
     previous = context.sync_state.get(c, key)
     changes = diff_probes(json.loads(previous), result) if previous else None
     context.sync_state.set(c, key, json.dumps(result))
+    if changes is not None:
+        context.sync_state.set(c, f"probe_diff:{numer}", json.dumps(
+            {"before": json.loads(previous), "after": result, "changes": changes}
+        ))
     return _render(
         request, context, c,
         probe={"result": result, "changes": changes, "had_previous": previous is not None},
+    )
+
+
+@router.get("/settings/diagnose/invoice.json")
+def download_probe(c: str, numer: str, context: AppContext = Depends(ctx)):
+    raw = context.sync_state.get(c, f"probe_diff:{numer}") or context.sync_state.get(c, f"probe:{numer}")
+    if not raw:
+        raise HTTPException(404, "Brak sprawdzenia tej faktury")
+    safe = "".join(ch if ch.isalnum() else "_" for ch in numer)
+    return Response(
+        content=json.dumps(json.loads(raw), indent=2, ensure_ascii=False),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="sonda-{c}-{safe}.json"'},
     )

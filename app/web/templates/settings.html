@@ -200,6 +200,28 @@
     <p class="muted">Nie znaleziono kolumn KSeF.</p>
     {% endif %}
 
+    <h4>Statusy KSeF w dokumentach Optimy</h4>
+    {% if rep.ksef_status_values is string %}
+    <p class="error-text">{{ rep.ksef_status_values }}</p>
+    {% elif rep.ksef_status_values %}
+    <table>
+        <tr><th>Typ dok.</th><th>StatusId</th><th>Status</th><th>Srodowisko</th><th class="num">Dokumentow</th><th class="num">Z numerem KSeF</th><th>Przyklad TrN_TrNID</th></tr>
+        {% for s in rep.ksef_status_values %}
+        <tr><td>{{ s.typ_dokumentu }}</td><td>{{ s.status_id }}</td><td>{{ s.status }}</td><td>{{ s.srodowisko }}</td>
+            <td class="num">{{ s.dokumentow }}</td><td class="num">{{ s.z_numerem_ksef }}</td><td>{{ s.przyklad_trn_id }}</td></tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+    {% if rep.trigger_definitions and rep.trigger_definitions is not string %}
+    <details>
+        <summary>Triggery TraNag/VatNag/DokumentyKSeF ({{ rep.trigger_definitions | length }})</summary>
+        {% for tr in rep.trigger_definitions %}
+        <p><strong>{{ tr.table }}.{{ tr.name }}</strong>{% if not tr.definition %} <span class="muted">(brak tresci - brak uprawnien VIEW DEFINITION lub szyfrowany)</span>{% endif %}</p>
+        {% if tr.definition %}<pre style="max-height:20rem; overflow:auto; background:#f5f5f5; padding:.6rem; font-size:.75rem">{{ tr.definition }}</pre>{% endif %}
+        {% endfor %}
+    </details>
+    {% endif %}
+
     <h4>Podzielona platnosc (MPP)</h4>
     <p>{% if rep.mpp_columns %}{{ rep.mpp_columns | join(', ') }}{% else %}<span class="muted">nie znaleziono kolumn MPP na TraNag</span>{% endif %}</p>
 
@@ -244,16 +266,17 @@
     {% if probe %}
     {% if probe.changes %}
     <p><strong>Zmiany od poprzedniego sprawdzenia:</strong></p>
-    {% if probe.changes.tranag_changed %}
+    {% if probe.changes.changed %}
     <table>
-        <tr><th>Kolumna TraNag</th><th>Przed</th><th>Po</th></tr>
-        {% for ch in probe.changes.tranag_changed %}
-        <tr><td>{{ ch.column }}</td><td>{{ ch.before if ch.before is not none else '—' }}</td><td>{{ ch.after if ch.after is not none else '—' }}</td></tr>
+        <tr><th>Tabela</th><th>Kolumna</th><th>Przed</th><th>Po</th></tr>
+        {% for ch in probe.changes.changed %}
+        <tr><td>{{ ch.table }}</td><td>{{ ch.column }}</td><td>{{ ch.before if ch.before is not none else '—' }}</td><td>{{ ch.after if ch.after is not none else '—' }}</td></tr>
         {% endfor %}
     </table>
     {% else %}
-    <p class="muted">Brak zmian w TraNag.</p>
+    <p class="muted">Brak zmian w fakturze i wierszach powiazanych.</p>
     {% endif %}
+    <p><a href="/settings/diagnose/invoice.json?c={{ company_id }}&numer={{ probe.result.numer | urlencode }}">pobierz porownanie (JSON)</a></p>
     {% if probe.changes.dokumenty_ksef_new %}
     <p>Nowe/zmienione wiersze CDN.DokumentyKSeF:</p>
     <pre style="overflow:auto; background:#f5f5f5; padding:.6rem; font-size:.8rem">{{ probe.changes.dokumenty_ksef_new | tojson(indent=2) }}</pre>
@@ -270,8 +293,14 @@
             {% endif %}{% endfor %}
         </table>
     </details>
+    {% for table, rows in probe.result.linked.items() %}
     <details>
-        <summary>Najnowsze wiersze CDN.DokumentyKSeF</summary>
+        <summary>Powiazane: CDN.{{ table }}</summary>
+        <pre style="overflow:auto; background:#f5f5f5; padding:.6rem; font-size:.8rem">{{ rows | tojson(indent=2) }}</pre>
+    </details>
+    {% endfor %}
+    <details>
+        <summary>Wiersze CDN.DokumentyKSeF (tej faktury + najnowsze)</summary>
         {% if probe.result.dokumenty_ksef_error %}
         <p class="error-text">{{ probe.result.dokumenty_ksef_error }}</p>
         {% else %}
