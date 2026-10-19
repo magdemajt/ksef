@@ -57,3 +57,19 @@ def test_village_without_street_uses_postcode_line():
         "cols": ["Pcz_Miasto", "Pcz_KodPocztowy"], "rows": [("Brzezie", "32-080")],
     }})
     assert find_company_address(conn)[0]["address_line1"] == "32-080 Brzezie"
+
+
+def test_postcode_found_by_value_when_column_name_unknown():
+    conn = _Conn({"Pieczatki": {
+        "cols": ["Pcz_Ulica", "Pcz_NrDomu", "Pcz_KodPoczt2", "Pcz_Miasto", "Pcz_Telefon"],
+        "rows": [("Brzezie", "12", "32-080", "Zabierzów", "123-456-789")],
+    }})
+    assert find_company_address(conn)[0]["address_line2"] == "32-080 Zabierzów"
+
+
+def test_city_with_postcode_inside_not_duplicated():
+    conn = _Conn({"Pieczatki": {
+        "cols": ["Pcz_Ulica", "Pcz_Miasto", "Pcz_Kod"],
+        "rows": [("Brzezie 12", "32-080 Zabierzów", "32-080")],
+    }})
+    assert find_company_address(conn)[0]["address_line2"] == "32-080 Zabierzów"

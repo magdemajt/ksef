@@ -14,6 +14,7 @@ nowych wierszy = autorytatywna specyfikacja INSERT-ow (insert_spec.json).
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -214,8 +215,9 @@ _ADDRESS_FIELDS = {
     "nr_domu": ("nrdomu",),
     "nr_lokalu": ("nrlokalu",),
     "miasto": ("miasto", "miejscowosc"),
-    "kod_pocztowy": ("kodpocztowy",),
+    "kod_pocztowy": ("kodpocztowy", "kodpoczt"),
 }
+POSTCODE_RE = re.compile(r"^\d{2}-\d{3}$")
 COMPANY_TABLES = ("Pieczatki", "Firma")
 
 
@@ -228,6 +230,14 @@ def _match_address_columns(columns: list[str]) -> dict[str, str]:
                 found[field] = by_suffix[suffix]
                 break
     return found
+
+
+def _postcode_in_row(row: dict) -> str:
+    """Kod pocztowy rozpoznany po wartosci (NN-NNN), gdy nazwa kolumny jest nieznana."""
+    for value in row.values():
+        if value and POSTCODE_RE.match(value.strip()):
+            return value.strip()
+    return ""
 
 
 def find_company_address(conn) -> list[dict]:
@@ -255,7 +265,11 @@ def find_company_address(conn) -> list[dict]:
             street = " ".join(p for p in (get("ulica"), get("nr_domu")) if p)
             if get("nr_lokalu"):
                 street += f" lok. {get('nr_lokalu')}"
-            line2 = " ".join(p for p in (get("kod_pocztowy"), get("miasto")) if p)
+            postcode = get("kod_pocztowy") or _postcode_in_row(row)
+            city = get("miasto")
+            if POSTCODE_RE.match(city.split(" ", 1)[0]):
+                postcode = ""  # miejscowosc zapisana razem z kodem
+            line2 = " ".join(p for p in (postcode, city) if p)
             if not (street or line2):
                 continue
             candidates.append({
