@@ -66,6 +66,11 @@ def sales_list(
         elif inv.optima_ksef_number:
             row.update(selectable=False, badge="blocked", label="wyslana z Optimy",
                        ksef_number=inv.optima_ksef_number)
+        elif inv.optima_nie_wysylaj:
+            row.update(selectable=False, badge="blocked", label="wylaczona z KSeF w Optimie")
+        elif inv.optima_ksef_ref:
+            row.update(selectable=False, badge="blocked", label="wysylana z Optimy",
+                       detail=inv.optima_ksef_status)
         elif inv.korekta:
             row.update(selectable=False, badge="blocked", label="korekta (poza v1)")
         elif inv.buyer is None or len(inv.buyer.nip_normalized) != 10:

@@ -92,6 +92,7 @@ class Fa3Line:
     cena_netto: Decimal
     wartosc_netto: Decimal
     stawka_symbol: str
+    zal15: bool = False
 
 
 @dataclass
@@ -119,6 +120,7 @@ class Fa3Invoice:
     lines: list[Fa3Line] = field(default_factory=list)
     termin_platnosci: str | None = None
     forma_platnosci: str | None = None
+    mpp: bool = False  # Adnotacje/P_18A - mechanizm podzielonej platnosci
 
 
 def _q2(value: Decimal) -> Decimal:
@@ -148,8 +150,19 @@ def map_invoice(
         raise MappingError(
             f"Faktura ma juz numer KSeF w Optimie ({inv.optima_ksef_number}) - wyslana innym kanalem"
         )
+    if inv.optima_nie_wysylaj:
+        raise MappingError("W Optimie zaznaczono na fakturze 'Nie wysylaj dokumentu do KSeF'")
+    if inv.optima_ksef_ref:
+        raise MappingError(
+            f"Optima rozpoczela wysylke tej faktury do KSeF (nr referencyjny {inv.optima_ksef_ref}, "
+            f"status: {inv.optima_ksef_status or '?'}) - sprawdz status w Optimie"
+        )
     if inv.buyer is None:
         raise MappingError("Brak kontrahenta na fakturze")
+    if inv.buyer.nip_kraj not in ("", "PL"):
+        raise MappingError(
+            f"Nabywca z NIP {inv.buyer.nip_kraj}{inv.buyer.nip} - sprzedaz zagraniczna poza zakresem v1"
+        )
     buyer_nip = inv.buyer.nip_normalized
     if len(buyer_nip) != 10:
         raise MappingError(
@@ -188,6 +201,7 @@ def map_invoice(
                 cena_netto=line.cena,
                 wartosc_netto=net,
                 stawka_symbol=symbol,
+                zal15=line.zal15,
             )
         )
 
@@ -234,11 +248,11 @@ def map_invoice(
 
     return Fa3Invoice(
         kod_waluty=inv.waluta.upper(),
-        p_1=inv.data_dok.isoformat(),
+        p_1=inv.data_wystawienia.isoformat(),
         p_2=inv.numer_pelny,
         p_6=(
-            inv.data_wys.isoformat()
-            if inv.data_wys and inv.data_wys != inv.data_dok
+            inv.data_sprzedazy.isoformat()
+            if inv.data_sprzedazy and inv.data_sprzedazy != inv.data_wystawienia
             else None
         ),
         buckets=buckets,
@@ -258,6 +272,7 @@ def map_invoice(
         lines=lines,
         termin_platnosci=inv.termin.isoformat() if inv.termin else None,
         forma_platnosci=forma,
+        mpp=inv.split_payment,
     )
 
 

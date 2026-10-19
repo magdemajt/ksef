@@ -109,7 +109,7 @@ def selftest() -> int:
     buyer = Contractor(knt_id=1, kod="T", nip="5261040158", nazwa="Test",
                        ulica="Testowa", nr_domu="1", miasto="Warszawa", kod_pocztowy="00-001")
     inv = SalesInvoice(
-        trn_id=1, numer_pelny="FA/SELFTEST/1", data_dok=date.today(), data_wys=None,
+        trn_id=1, numer_pelny="FA/SELFTEST/1", data_wystawienia=date.today(), data_sprzedazy=None,
         termin=None, razem_netto=D("100.00"), razem_vat=D("23.00"), razem_brutto=D("123.00"),
         korekta=False, waluta="PLN", kurs=None, kurs_l=None, forma_platnosci=None, buyer=buyer,
         lines=[SalesLine(1, "Selftest", D(1), "szt.", D("100.00"), D(23), 2, D("100.00"))],

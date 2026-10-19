@@ -15,7 +15,7 @@ def _built_invoice_xml() -> bytes:
         ulica="Testowa", nr_domu="5", miasto="Warszawa", kod_pocztowy="00-001",
     )
     inv = SalesInvoice(
-        trn_id=1, numer_pelny="FA/RT/1", data_dok=date(2026, 8, 1), data_wys=None,
+        trn_id=1, numer_pelny="FA/RT/1", data_wystawienia=date(2026, 8, 1), data_sprzedazy=None,
         termin=date(2026, 8, 20), razem_netto=D("150.00"), razem_vat=D("27.00"),
         razem_brutto=D("177.00"), korekta=False, waluta="PLN", kurs=None, kurs_l=None,
         forma_platnosci="przelew", buyer=buyer,

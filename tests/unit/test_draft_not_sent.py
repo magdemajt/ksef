@@ -31,7 +31,7 @@ def make_invoice(bufor: bool) -> SalesInvoice:
         ulica="Testowa", nr_domu="5", miasto="Warszawa", kod_pocztowy="00-001",
     )
     return SalesInvoice(
-        trn_id=77, numer_pelny="FA/DRAFT/1", data_dok=date(2026, 8, 1), data_wys=None,
+        trn_id=77, numer_pelny="FA/DRAFT/1", data_wystawienia=date(2026, 8, 1), data_sprzedazy=None,
         termin=None, razem_netto=D("100.00"), razem_vat=D("23.00"), razem_brutto=D("123.00"),
         korekta=False, waluta="PLN", kurs=None, kurs_l=None, forma_platnosci=None,
         buyer=buyer, bufor=bufor,

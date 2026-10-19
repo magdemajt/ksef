@@ -22,7 +22,7 @@ def make_invoice(**overrides) -> SalesInvoice:
         ulica="Testowa", nr_domu="5", miasto="Warszawa", kod_pocztowy="00-001",
     )
     base = dict(
-        trn_id=1, numer_pelny="FA/1/2026", data_dok=date(2026, 8, 1), data_wys=None,
+        trn_id=1, numer_pelny="FA/1/2026", data_wystawienia=date(2026, 8, 1), data_sprzedazy=None,
         termin=date(2026, 8, 15), razem_netto=D("100.00"), razem_vat=D("23.00"),
         razem_brutto=D("123.00"), korekta=False, waluta="PLN", kurs=None, kurs_l=None,
         forma_platnosci="przelew", buyer=buyer,
@@ -147,4 +147,38 @@ class TestMapInvoice:
         inv = make_invoice()
         inv.buyer.ulica = inv.buyer.nr_domu = inv.buyer.miasto = inv.buyer.kod_pocztowy = ""
         with pytest.raises(MappingError, match="adresu"):
+            map_invoice(inv, **SELLER)
+
+
+class TestOptimaFlags:
+    def test_split_payment_sets_p18a_and_zal15(self):
+        inv = make_invoice(split_payment=True)
+        inv.lines[0].zal15 = True
+        xml = build_fa3(map_invoice(inv, **SELLER))
+        assert validate(xml) == []
+        assert b"<P_18A>1</P_18A>" in xml and b"<P_12_Zal_15>1</P_12_Zal_15>" in xml
+
+    def test_no_split_payment_by_default(self):
+        xml = build_fa3(map_invoice(make_invoice(), **SELLER))
+        assert b"<P_18A>2</P_18A>" in xml and b"P_12_Zal_15" not in xml
+
+    def test_sale_date_emitted_when_different(self):
+        inv = make_invoice(data_sprzedazy=date(2026, 7, 31))
+        xml = build_fa3(map_invoice(inv, **SELLER))
+        assert b"<P_1>2026-08-01</P_1>" in xml and b"<P_6>2026-07-31</P_6>" in xml
+        assert validate(xml) == []
+
+    def test_optima_do_not_send_flag_blocks(self):
+        with pytest.raises(MappingError, match="Nie wysylaj"):
+            map_invoice(make_invoice(optima_nie_wysylaj=True), **SELLER)
+
+    def test_send_in_progress_from_optima_blocks(self):
+        inv = make_invoice(optima_ksef_ref="20261019-SE-ABC", optima_ksef_status="Wyslany")
+        with pytest.raises(MappingError, match="Optima rozpoczela"):
+            map_invoice(inv, **SELLER)
+
+    def test_foreign_nip_prefix_blocks(self):
+        inv = make_invoice()
+        inv.buyer.nip_kraj = "DE"
+        with pytest.raises(MappingError, match="zagraniczna"):
             map_invoice(inv, **SELLER)

@@ -35,7 +35,7 @@
                 {% endif %}
             </td>
             <td>{{ row.inv.numer_pelny }}</td>
-            <td>{{ row.inv.data_dok }}</td>
+            <td>{{ row.inv.data_wystawienia }}</td>
             <td>{{ row.inv.buyer.nazwa if row.inv.buyer else '—' }}</td>
             <td>{{ row.inv.buyer.nip if row.inv.buyer else '—' }}</td>
             <td class="num">{{ row.inv.razem_netto }}</td>
