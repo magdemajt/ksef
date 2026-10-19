@@ -219,3 +219,18 @@ class TestBankAccount:
     def test_no_account_no_bank_element(self):
         xml = build_fa3(map_invoice(make_invoice(), **SELLER))
         assert b"RachunekBankowy" not in xml
+
+
+class TestRegon:
+    def test_regon_in_footer_registers(self):
+        for regon in ("123456785", "12345678512347"):
+            xml = build_fa3(map_invoice(make_invoice(), **SELLER, seller_regon=regon))
+            assert validate(xml) == []
+            assert f"<Stopka><Rejestry><REGON>{regon}</REGON></Rejestry></Stopka>".encode() in xml
+
+    def test_no_regon_no_footer(self):
+        assert b"Stopka" not in build_fa3(map_invoice(make_invoice(), **SELLER))
+
+    def test_invalid_regon_blocked(self):
+        with pytest.raises(MappingError, match="REGON"):
+            map_invoice(make_invoice(), **SELLER, seller_regon="12345")

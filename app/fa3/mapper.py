@@ -6,6 +6,7 @@ brak NIP nabywcy, korekta itd. -> MappingError i blokada wysylki.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -123,6 +124,7 @@ class Fa3Invoice:
     mpp: bool = False  # Adnotacje/P_18A - mechanizm podzielonej platnosci
     rachunek_nr: str | None = None  # Platnosc/RachunekBankowy/NrRB
     nazwa_banku: str | None = None
+    seller_regon: str | None = None  # Stopka/Rejestry/REGON
 
 
 def _q2(value: Decimal) -> Decimal:
@@ -136,11 +138,17 @@ def map_invoice(
     seller_address_l1: str,
     seller_address_l2: str,
     seller_country: str = "PL",
+    seller_regon: str = "",
 ) -> Fa3Invoice:
     if not (seller_address_l1 or "").strip():
         raise MappingError(
             "Brak adresu firmy (sprzedawcy) w konfiguracji - uzupelnij w "
             "Ustawienia -> Firmy -> edytuj (przycisk 'Pobierz adres z Optimy')"
+        )
+    regon = "".join(ch for ch in (seller_regon or "") if ch.isdigit())
+    if regon and not re.fullmatch(r"\d{9}|\d{14}", regon):
+        raise MappingError(
+            f"REGON firmy {seller_regon!r} musi miec 9 lub 14 cyfr - popraw w Ustawienia -> Firmy"
         )
     if inv.bufor:
         raise MappingError(
@@ -275,5 +283,6 @@ def map_invoice(
         mpp=inv.split_payment,
         rachunek_nr=inv.rachunek_nr,
         nazwa_banku=inv.nazwa_banku,
+        seller_regon=regon or None,
     )
 

@@ -122,6 +122,7 @@ def _build_previews(context: AppContext, company_id: str, trn_ids: list[int],
                 seller_address_l1=company.address_line1,
                 seller_address_l2=company.address_line2,
                 seller_country=company.country_code,
+                seller_regon=company.regon,
             )
             xml = build_fa3(fa3)
             errors = validate(xml)
@@ -288,6 +289,7 @@ def sales_xml(
             seller_address_l1=company.address_line1,
             seller_address_l2=company.address_line2,
             seller_country=company.country_code,
+            seller_regon=company.regon,
         )
         xml = build_fa3(fa3)
     except MappingError as exc:

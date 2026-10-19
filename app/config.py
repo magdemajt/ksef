@@ -54,6 +54,7 @@ class CompanyConfig(BaseModel):
     name: str
     address_line1: str = ""
     address_line2: str = ""
+    regon: str = ""  # Stopka/Rejestry/REGON (9 lub 14 cyfr)
     country_code: str = "PL"
     database: str
     auth_method: AuthMethod = AuthMethod.TOKEN

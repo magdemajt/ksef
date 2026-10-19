@@ -27,6 +27,7 @@ COMPANY_FIELDS = {
     "database": True,
     "address_line1": False,
     "address_line2": False,
+    "regon": False,
     "country_code": False,
     "auth_method": False,
     "ksef_cert_path": False,

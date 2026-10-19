@@ -222,6 +222,7 @@ _ADDRESS_FIELDS = {
     "gmina": ("gmina",),
     "powiat": ("powiat",),
     "poczta": ("poczta",),
+    "regon": ("regon",),
 }
 POSTCODE_RE = re.compile(r"^\d{2}-\d{3}$")
 COMPANY_TABLES = ("Pieczatki", "Firma")
@@ -284,6 +285,7 @@ def find_company_address(conn) -> list[dict]:
                 "nip": get("nip"),
                 "address_line1": line1,
                 "address_line2": line2,
+                "regon": "".join(ch for ch in get("regon") if ch.isdigit()),
             })
     return candidates
 

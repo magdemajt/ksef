@@ -140,6 +140,11 @@ def build_fa3(inv: Fa3Invoice, system_info: str = "ksef-bridge") -> bytes:
             if inv.nazwa_banku:
                 _sub(rb, "NazwaBanku", inv.nazwa_banku)
 
+    # -- Stopka --
+    if inv.seller_regon:
+        rejestry = _sub(_sub(root, "Stopka"), "Rejestry")
+        _sub(rejestry, "REGON", inv.seller_regon)
+
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
 
 

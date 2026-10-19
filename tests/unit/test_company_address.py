@@ -38,10 +38,11 @@ def test_finds_stamp_address_and_skips_tables_without_address():
     conn = _Conn({
         "Pieczatki": {
             "cols": ["Pcz_PczID", "Pcz_Nazwa1", "Pcz_Nip", "Pcz_Ulica", "Pcz_NrDomu",
-                     "Pcz_NrLokalu", "Pcz_KodPocztowy", "Pcz_Miasto"],
+                     "Pcz_NrLokalu", "Pcz_KodPocztowy", "Pcz_Miasto", "Pcz_Regon"],
             "rows": [
-                (1, "Ensigner Tech", "526-587-76-35", "Brzezie", "12", "", "32-080", "Zabierzów"),
-                (2, "", "", "", "", "", "", ""),
+                (1, "Ensigner Tech", "526-587-76-35", "Brzezie", "12", "", "32-080", "Zabierzów",
+                 "123-456-785"),
+                (2, "", "", "", "", "", "", "", ""),
             ],
         },
         "Firma": {"cols": ["Fir_Numer", "Fir_Wartosc"], "rows": []},
@@ -49,6 +50,7 @@ def test_finds_stamp_address_and_skips_tables_without_address():
     assert find_company_address(conn) == [{
         "source": "CDN.Pieczatki", "nazwa": "Ensigner Tech", "nip": "526-587-76-35",
         "address_line1": "Brzezie 12", "address_line2": "32-080 Zabierzów",
+        "regon": "123456785",
     }]
 
 

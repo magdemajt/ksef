@@ -18,6 +18,9 @@
         <p>Adres (linia 1): <input type="text" name="address_line1" id="address_line1" value="{{ edit_company.address_line1 }}" size="30" placeholder="ulica i numer">
            &nbsp; (linia 2): <input type="text" name="address_line2" id="address_line2" value="{{ edit_company.address_line2 }}" size="25" placeholder="kod pocztowy i miasto">
            <button type="submit" form="optima-address" style="background:#555">Pobierz adres z Optimy</button></p>
+        <p>REGON: <input type="text" name="regon" id="regon" value="{{ edit_company.regon }}" size="16"
+              placeholder="9 lub 14 cyfr" inputmode="numeric">
+           <span class="muted">stopka faktury (Rejestry/REGON)</span></p>
         <p class="muted">Adres sprzedawcy jest obowiazkowy w fakturze FA(3) (Podmiot1) - trafia do
            kazdej faktury wysylanej do KSeF.</p>
         <p>Baza firmowa Optimy: <input type="text" name="database" value="{{ edit_company.database }}" required></p>
@@ -67,7 +70,7 @@
     <h3>Adres firmy znaleziony w Optimie</h3>
     <p class="muted">Sprawdz z pieczatka firmy w Optimie, kliknij "Uzyj", a potem "Zapisz zmiany".</p>
     <table>
-        <tr><th>Zrodlo</th><th>Nazwa</th><th>NIP</th><th>Adres (linia 1)</th><th>Adres (linia 2)</th><th></th></tr>
+        <tr><th>Zrodlo</th><th>Nazwa</th><th>NIP</th><th>Adres (linia 1)</th><th>Adres (linia 2)</th><th>REGON</th><th></th></tr>
         {% for a in address_candidates %}
         {% set nip_digits = a.nip | select('in', '0123456789') | join %}
         <tr>
@@ -77,8 +80,9 @@
                 <div class="error-text">inny niz NIP firmy ({{ edit_company.nip }})</div>{% endif %}</td>
             <td>{{ a.address_line1 }}</td>
             <td>{{ a.address_line2 }}</td>
-            <td><button type="button" data-l1="{{ a.address_line1 }}" data-l2="{{ a.address_line2 }}"
-                onclick="document.getElementById('address_line1').value = this.dataset.l1; document.getElementById('address_line2').value = this.dataset.l2;">Uzyj</button></td>
+            <td>{{ a.regon }}</td>
+            <td><button type="button" data-l1="{{ a.address_line1 }}" data-l2="{{ a.address_line2 }}" data-regon="{{ a.regon }}"
+                onclick="document.getElementById('address_line1').value = this.dataset.l1; document.getElementById('address_line2').value = this.dataset.l2; if (this.dataset.regon) document.getElementById('regon').value = this.dataset.regon;">Uzyj</button></td>
         </tr>
         {% endfor %}
     </table>

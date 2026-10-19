@@ -151,6 +151,7 @@ class SendService:
                 seller_address_l1=self.company.address_line1,
                 seller_address_l2=self.company.address_line2,
                 seller_country=self.company.country_code,
+                seller_regon=self.company.regon,
             )
             xml = build_fa3(fa3)
             errors = validate(xml)
