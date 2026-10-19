@@ -1,10 +1,11 @@
 [project]
 name = "ksef-bridge"
-version = "0.1.6"
+version = "0.1.7"
 description = "Integrator Comarch ERP Optima <-> KSeF 2.0 (wysylka faktur sprzedazy, pobieranie zakupow do rejestru VAT)"
 requires-python = ">=3.12"
 dependencies = [
-    "ksef2>=0.18",
+    # 0.18.1 zweryfikowane LIVE z API KSeF; 0.22 importuje ZoneInfo przy starcie (Windows bez tzdata)
+    "ksef2>=0.18.1,<0.19",
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "jinja2>=3.1",
