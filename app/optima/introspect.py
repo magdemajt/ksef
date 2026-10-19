@@ -20,6 +20,7 @@ from pathlib import Path
 WRITE_TABLES = ("VatNag", "VatTab", "BnkZdarzenia")
 INTEREST_TABLES = (
     "TraNag", "TraElem", "VatNag", "VatTab", "BnkZdarzenia", "DokumentyKSeF", "Kontrahenci",
+    "Firma", "Pieczatki",
 )
 
 
@@ -175,6 +176,12 @@ def run_diagnose(conn) -> dict:
     except Exception as exc:
         report["trigger_definitions"] = f"blad: {exc}"
 
+    # dane wlasne firmy (sprzedawcy) - zrodlo adresu Podmiot1
+    try:
+        report["company_address_candidates"] = find_company_address(conn)
+    except Exception as exc:
+        report["company_address_candidates"] = f"blad: {exc}"
+
     # probka 5 najnowszych faktur (tylko naglowki, do porownania z UI)
     try:
         cur.execute(
@@ -193,6 +200,72 @@ def run_diagnose(conn) -> dict:
         report["sample_invoices"] = f"blad: {exc}"
 
     return report
+
+
+# -- dane firmy (sprzedawcy) z Optimy --
+
+# Pole adresu -> sufiksy nazw kolumn wg konwencji Optimy (<Prefiks>_<Pole>), w kolejnosci
+# preferencji. Dokladne dopasowanie sufiksu, zeby nie lapac np. Knt_KorUlica / Knt_OsUlica.
+_ADDRESS_FIELDS = {
+    "nazwa": ("nazwa1", "nazwa", "nazwapelna"),
+    "nazwa2": ("nazwa2",),
+    "nip": ("nipe", "nip"),
+    "ulica": ("ulica",),
+    "nr_domu": ("nrdomu",),
+    "nr_lokalu": ("nrlokalu",),
+    "miasto": ("miasto", "miejscowosc"),
+    "kod_pocztowy": ("kodpocztowy",),
+}
+COMPANY_TABLES = ("Pieczatki", "Firma")
+
+
+def _match_address_columns(columns: list[str]) -> dict[str, str]:
+    by_suffix = {c.lower().split("_", 1)[-1]: c for c in columns}
+    found = {}
+    for field, suffixes in _ADDRESS_FIELDS.items():
+        for suffix in suffixes:
+            if suffix in by_suffix:
+                found[field] = by_suffix[suffix]
+                break
+    return found
+
+
+def find_company_address(conn) -> list[dict]:
+    """Kandydaci na adres firmy z tabel z kolumnami adresowymi (pieczatka firmy).
+
+    Tylko podpowiedz dla formularza firmy - uzytkownik zatwierdza adres recznie,
+    bo nazwy kolumn i znaczenie wierszy nie sa udokumentowane.
+    """
+    cur = conn.cursor()
+    candidates = []
+    for table in COMPANY_TABLES:
+        cur.execute(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='CDN' AND TABLE_NAME=? ORDER BY ORDINAL_POSITION",
+            (table,),
+        )
+        found = _match_address_columns([r[0] for r in cur.fetchall()])
+        if "miasto" not in found:
+            continue
+        cur.execute(f"SELECT TOP 10 * FROM CDN.[{table}]")  # noqa: S608
+        for row in _dicts(cur):
+            def get(field: str) -> str:
+                return (row.get(found[field]) or "").strip() if field in found else ""
+
+            street = " ".join(p for p in (get("ulica"), get("nr_domu")) if p)
+            if get("nr_lokalu"):
+                street += f" lok. {get('nr_lokalu')}"
+            line2 = " ".join(p for p in (get("kod_pocztowy"), get("miasto")) if p)
+            if not (street or line2):
+                continue
+            candidates.append({
+                "source": f"CDN.{table}",
+                "nazwa": " ".join(p for p in (get("nazwa"), get("nazwa2")) if p),
+                "nip": get("nip"),
+                "address_line1": street or line2,
+                "address_line2": line2 if street else "",
+            })
+    return candidates
 
 
 # -- sonda pojedynczej faktury (ustalenie, gdzie Optima zapisuje numer KSeF) --

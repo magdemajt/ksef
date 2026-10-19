@@ -15,8 +15,11 @@
         <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
         <p>NIP: <input type="text" name="nip" value="{{ edit_company.nip }}" required>
            &nbsp; Nazwa: <input type="text" name="name" value="{{ edit_company.name }}" required size="40"></p>
-        <p>Adres (linia 1): <input type="text" name="address_line1" value="{{ edit_company.address_line1 }}" size="30">
-           &nbsp; (linia 2): <input type="text" name="address_line2" value="{{ edit_company.address_line2 }}" size="25"></p>
+        <p>Adres (linia 1): <input type="text" name="address_line1" id="address_line1" value="{{ edit_company.address_line1 }}" size="30" placeholder="ulica i numer">
+           &nbsp; (linia 2): <input type="text" name="address_line2" id="address_line2" value="{{ edit_company.address_line2 }}" size="25" placeholder="kod pocztowy i miasto">
+           <button type="submit" form="optima-address" style="background:#555">Pobierz adres z Optimy</button></p>
+        <p class="muted">Adres sprzedawcy jest obowiazkowy w fakturze FA(3) (Podmiot1) - trafia do
+           kazdej faktury wysylanej do KSeF.</p>
         <p>Baza firmowa Optimy: <input type="text" name="database" value="{{ edit_company.database }}" required></p>
         <p>
             Rejestr VAT zakupu: <input type="text" name="purchase_register" value="{{ edit_company.purchase_register }}" size="10">
@@ -53,5 +56,32 @@
             <a class="btn" style="background:#777" href="/settings?c={{ company_id }}">Anuluj</a>
         </p>
     </form>
+    <form method="post" action="/settings/company/{{ edit_id }}/optima-address" id="optima-address">
+        <input type="hidden" name="c" value="{{ company_id }}">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+    </form>
 </div>
+
+{% if address_candidates %}
+<div class="card">
+    <h3>Adres firmy znaleziony w Optimie</h3>
+    <p class="muted">Sprawdz z pieczatka firmy w Optimie, kliknij "Uzyj", a potem "Zapisz zmiany".</p>
+    <table>
+        <tr><th>Zrodlo</th><th>Nazwa</th><th>NIP</th><th>Adres (linia 1)</th><th>Adres (linia 2)</th><th></th></tr>
+        {% for a in address_candidates %}
+        {% set nip_digits = a.nip | select('in', '0123456789') | join %}
+        <tr>
+            <td>{{ a.source }}</td>
+            <td>{{ a.nazwa }}</td>
+            <td>{{ a.nip }}{% if nip_digits and nip_digits != edit_company.nip %}
+                <div class="error-text">inny niz NIP firmy ({{ edit_company.nip }})</div>{% endif %}</td>
+            <td>{{ a.address_line1 }}</td>
+            <td>{{ a.address_line2 }}</td>
+            <td><button type="button" data-l1="{{ a.address_line1 }}" data-l2="{{ a.address_line2 }}"
+                onclick="document.getElementById('address_line1').value = this.dataset.l1; document.getElementById('address_line2').value = this.dataset.l2;">Uzyj</button></td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
 {% endblock %}

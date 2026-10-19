@@ -138,7 +138,7 @@ def map_invoice(
     if not (seller_address_l1 or "").strip():
         raise MappingError(
             "Brak adresu firmy (sprzedawcy) w konfiguracji - uzupelnij w "
-            "Ustawienia -> Firmy -> edytuj"
+            "Ustawienia -> Firmy -> edytuj (przycisk 'Pobierz adres z Optimy')"
         )
     if inv.bufor:
         raise MappingError(

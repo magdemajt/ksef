@@ -215,7 +215,8 @@ def add_company(
 
 
 def _render_edit(request: Request, context: AppContext, company_id: str, edit_id: str,
-                 message: str | None = None, message_ok: bool = True):
+                 message: str | None = None, message_ok: bool = True,
+                 address_candidates: list[dict] | None = None):
     if edit_id not in context.cfg.companies:
         return RedirectResponse(f"/settings?c={company_id}", status_code=303)
     return request.app.state.templates.TemplateResponse(
@@ -226,6 +227,7 @@ def _render_edit(request: Request, context: AppContext, company_id: str, edit_id
             "company": context.company(company_id), "active": "settings",
             "edit_id": edit_id, "edit_company": context.cfg.companies[edit_id],
             "message": message, "message_ok": message_ok,
+            "address_candidates": address_candidates,
         },
     )
 
@@ -293,6 +295,34 @@ def save_company(
         return _render_edit(request, context, c, edit_id, "Zmiany zapisane", True)
     except configstore.ConfigStoreError as exc:
         return _render_edit(request, context, c, edit_id, str(exc), False)
+
+
+@router.post("/settings/company/{edit_id}/optima-address")
+def company_address_from_optima(
+    request: Request, edit_id: str, c: str = Form(...), csrf: str = Form(...),
+    context: AppContext = Depends(ctx),
+):
+    context.check_csrf(csrf)
+    from app.optima.introspect import find_company_address
+
+    if edit_id not in context.cfg.companies:
+        return RedirectResponse(f"/settings?c={c}", status_code=303)
+    try:
+        conn = context.optima.read_connection(context.cfg.companies[edit_id])
+        try:
+            candidates = find_company_address(conn)
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        return _render_edit(request, context, c, edit_id,
+                            f"Odczyt danych firmy z Optimy nie powiodl sie: {exc}", False)
+    if not candidates:
+        return _render_edit(
+            request, context, c, edit_id,
+            "Nie znaleziono adresu firmy w Optimie (CDN.Pieczatki / CDN.Firma) - wpisz recznie "
+            "i przeslij raport diagnostyki", False,
+        )
+    return _render_edit(request, context, c, edit_id, address_candidates=candidates)
 
 
 # -- testy polaczen --
