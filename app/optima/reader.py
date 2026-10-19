@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from app.optima.models import Contractor, SalesInvoice, SalesLine
 
@@ -25,6 +25,11 @@ RATE_DEN_CANDIDATES = ("TrN_KursM",)
 # Kolumny KSeF na TraNag (Optima 2026 z aktywnym modulem KSeF) - nazwy ustalane w runtime
 KSEF_NUMBER_HINTS = ("numer", "nrksef")
 KSEF_STATUS_HINTS = ("status",)
+# Jednostka miary pozycji na TraElem
+UNIT_CANDIDATES = ("TrE_JmZ", "TrE_JM")
+# Numer domu/lokalu nabywcy na Kontrahenci
+HOUSE_NO_CANDIDATES = ("Knt_NrDomu",)
+FLAT_NO_CANDIDATES = ("Knt_NrLokalu",)
 
 
 class SalesReader:
@@ -32,6 +37,7 @@ class SalesReader:
         self.conn = conn
         self._tranag_cols: set[str] | None = None
         self._knt_cols: set[str] | None = None
+        self._traelem_cols: set[str] | None = None
 
     # -- introspekcja --
 
@@ -49,11 +55,22 @@ class SalesReader:
             self._tranag_cols = self._columns("TraNag")
         return self._tranag_cols
 
-    def _pick(self, candidates: tuple[str, ...]) -> str | None:
-        cols = self.tranag_columns()
+    def knt_columns(self) -> set[str]:
+        if self._knt_cols is None:
+            self._knt_cols = self._columns("Kontrahenci")
+        return self._knt_cols
+
+    def traelem_columns(self) -> set[str]:
+        if self._traelem_cols is None:
+            self._traelem_cols = self._columns("TraElem")
+        return self._traelem_cols
+
+    def _pick(self, candidates: tuple[str, ...], cols: set[str] | None = None) -> str | None:
+        # SQL Server (domyslna collation) nie rozroznia wielkosci liter w nazwach kolumn
+        by_lower = {c.lower(): c for c in (self.tranag_columns() if cols is None else cols)}
         for cand in candidates:
-            if cand in cols:
-                return cand
+            if cand.lower() in by_lower:
+                return by_lower[cand.lower()]
         return None
 
     def ksef_columns(self) -> dict[str, str]:
@@ -76,6 +93,10 @@ class SalesReader:
         kurs_l_col = self._pick(RATE_NUM_CANDIDATES)
         kurs_m_col = self._pick(RATE_DEN_CANDIDATES)
         ksef = self.ksef_columns()
+        nr_domu_col = self._pick(HOUSE_NO_CANDIDATES, self.knt_columns())
+        nr_lokalu_col = self._pick(FLAT_NO_CANDIDATES, self.knt_columns())
+        nr_domu_sql = f"K.{nr_domu_col}" if nr_domu_col else "NULL"
+        nr_lokalu_sql = f"K.{nr_lokalu_col}" if nr_lokalu_col else "NULL"
 
         select_extra = []
         select_extra.append(f"T.{waluta_col}" if waluta_col else "'PLN'")
@@ -90,7 +111,7 @@ class SalesReader:
                    ISNULL(T.TrN_Korekta, 0),
                    FP.FPl_Nazwa,
                    K.Knt_KntId, K.Knt_Kod, K.Knt_Nip, K.Knt_Nazwa1, K.Knt_Nazwa2, K.Knt_Nazwa3,
-                   K.Knt_Ulica, K.Knt_Miasto, K.Knt_KodPocztowy,
+                   K.Knt_Ulica, {nr_domu_sql}, {nr_lokalu_sql}, K.Knt_Miasto, K.Knt_KodPocztowy,
                    ISNULL(T.TrN_Bufor, 0),
                    {', '.join(select_extra)}
             FROM CDN.TraNag T
@@ -122,7 +143,7 @@ class SalesReader:
                    ISNULL(T.TrN_Korekta, 0),
                    NULL,
                    K.Knt_KntId, K.Knt_Kod, K.Knt_Nip, K.Knt_Nazwa1, NULL, NULL,
-                   NULL, NULL, NULL,
+                   NULL, NULL, NULL, NULL, NULL,
                    ISNULL(T.TrN_Bufor, 0),
                    'PLN', NULL, NULL, NULL, NULL
             FROM CDN.TraNag T
@@ -142,7 +163,7 @@ class SalesReader:
             trn_id, numer, data_dok, data_wys, termin,
             netto, vat, brutto, korekta, fpl_nazwa,
             knt_id, knt_kod, knt_nip, n1, n2, n3,
-            ulica, miasto, kod_p, bufor,
+            ulica, nr_domu, nr_lokalu, miasto, kod_p, bufor,
             waluta, kurs_l, kurs_m, ksef_nr, ksef_status,
         ) = row
         buyer = None
@@ -154,6 +175,8 @@ class SalesReader:
                 nip=knt_nip or "",
                 nazwa=nazwa,
                 ulica=ulica or "",
+                nr_domu=(nr_domu or "").strip(),
+                nr_lokalu=(nr_lokalu or "").strip(),
                 miasto=miasto or "",
                 kod_pocztowy=kod_p or "",
             )
@@ -178,8 +201,12 @@ class SalesReader:
         )
 
     def get_lines(self, trn_id: int) -> list[SalesLine]:
-        sql = """
-            SELECT TrE_TwrNazwa, TrE_Ilosc, TrE_JmZ, TrE_Cena, TrE_Stawka, TrE_Flaga,
+        # Cena jednostkowa netto (P_9A) liczona z wartosci netto pozycji, nie z kolumny
+        # cenowej: TrE_Cena nie istnieje w Optimie 2026, a kolumny cenowe TraElem bywaja
+        # brutto (faktura liczona od brutto) lub sprzed rabatu - P_9A musi byc spojne z P_11.
+        jm_col = self._pick(UNIT_CANDIDATES, self.traelem_columns())
+        sql = f"""
+            SELECT TrE_TwrNazwa, TrE_Ilosc, {jm_col or "NULL"}, TrE_Stawka, TrE_Flaga,
                    TrE_WartoscNetto
             FROM CDN.TraElem
             WHERE TrE_TrNId = ?
@@ -189,17 +216,20 @@ class SalesReader:
         cur.execute(sql, (trn_id,))
         lines = []
         for i, row in enumerate(cur.fetchall(), start=1):
-            nazwa, ilosc, jm, cena, stawka, flaga, netto = row
+            nazwa, ilosc, jm, stawka, flaga, netto = row
+            ilosc = Decimal(str(ilosc or 0))
+            netto = Decimal(str(netto or 0))
+            cena = (netto / ilosc).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if ilosc else netto
             lines.append(
                 SalesLine(
                     lp=i,
                     nazwa=nazwa or "",
-                    ilosc=Decimal(str(ilosc or 0)),
+                    ilosc=ilosc,
                     jednostka=(jm or "szt.").strip(),
-                    cena=Decimal(str(cena or 0)),
+                    cena=cena,
                     stawka=Decimal(str(stawka or 0)),
                     flaga=int(flaga or 0),
-                    wartosc_netto=Decimal(str(netto or 0)),
+                    wartosc_netto=netto,
                 )
             )
         return lines

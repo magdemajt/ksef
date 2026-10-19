@@ -94,7 +94,12 @@ class SendService:
         sent_refs: dict[int, str] = {}
         try:
             for trn_id in trn_ids:
-                self._send_one(session, session_ref, trn_id, hint_from, hint_to, sent_refs)
+                try:
+                    self._send_one(session, session_ref, trn_id, hint_from, hint_to, sent_refs)
+                except Exception as exc:
+                    # blad jednej faktury nie przerywa partii
+                    logger.exception("Wysylka faktury TrN_TrNID=%s nie powiodla sie", trn_id)
+                    self._mark_failed(trn_id, exc)
         finally:
             try:
                 self.gateway.close_session(session)
@@ -205,6 +210,21 @@ class SendService:
         self.audit.log(
             "invoice_status", self.company_id, "sales_invoice", str(trn_id), self.env,
             {"code": code, "ksef_number": ksef_number},
+        )
+
+    def _mark_failed(self, trn_id: int, exc: Exception) -> None:
+        row = self.sent.get(self.company_id, trn_id, self.env)
+        if row and row["status"] == "sent":
+            # XML juz poszedl do KSeF - faktura mogla zostac przyjeta
+            detail = (
+                f"Wyslano do KSeF, ale status nieznany ({exc}) - sprawdz w KSeF "
+                f"przed ponowna wysylka"
+            )
+        else:
+            detail = f"Blad przed wysylka do KSeF: {exc}"
+        extra = {} if row else {"numer_pelny": "?"}
+        self.sent.upsert(
+            self.company_id, trn_id, self.env, status="error", error_detail=detail[:2000], **extra,
         )
 
     def _store_file(self, name: str, content: bytes) -> Path:

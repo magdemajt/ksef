@@ -102,7 +102,8 @@ Raport rozstrzyga elementy zależne od wersji Optimy:
 
 Po diagnozie porównaj 5 przykładowych faktur (sekcja `sample_invoices`) z oknem
 faktury w Optimie, a wygenerowany XML (przycisk „podgląd” w GUI) z wartościami
-dokumentu — zwłaszcza `TrE_Cena` (netto vs brutto) i sumy per stawka.
+dokumentu — zwłaszcza cenę jednostkową `P_9A` (liczona jako `TrE_WartoscNetto / TrE_Ilosc`)
+i sumy per stawka.
 
 ### M3/M4 — wysyłka i pobieranie
 

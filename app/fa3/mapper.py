@@ -105,7 +105,7 @@ class Fa3Invoice:
     buckets: dict[str, VatBucket]  # symbol stawki -> sumy (w walucie faktury)
     vat_pln: dict[str, Decimal]  # symbol stawki -> VAT w PLN (tylko waluta != PLN)
     p_15: Decimal  # naleznosc ogolem
-    kurs_waluty_z: Decimal | None
+    kurs_waluty: Decimal | None
     seller_nip: str
     seller_name: str
     seller_country: str
@@ -174,9 +174,6 @@ def map_invoice(
         bucket = buckets.setdefault(symbol, VatBucket())
         net = _q2(line.wartosc_netto)
         bucket.net += net
-        _, p14, _ = RATE_BUCKETS[symbol]
-        if p14 is not None:
-            bucket.vat += _q2(net * line.stawka / Decimal(100))
         lines.append(
             Fa3Line(
                 nr=line.lp,
@@ -187,6 +184,27 @@ def map_invoice(
                 wartosc_netto=net,
                 stawka_symbol=symbol,
             )
+        )
+
+    if "zw" in buckets:
+        raise MappingError(
+            "Sprzedaz zwolniona z VAT (zw) wymaga podstawy prawnej zwolnienia "
+            "(P_19A/B/C) - poza zakresem v1"
+        )
+
+    # VAT od sumy netto w stawce (art. 106e ust. 1 pkt 14), nie suma VAT z pozycji -
+    # inaczej P_14_x rozjezdza sie o grosze z rejestrem VAT Optimy
+    for symbol, bucket in buckets.items():
+        if RATE_BUCKETS[symbol][1] is not None:
+            bucket.vat = _q2(bucket.net * Decimal(symbol) / Decimal(100))
+
+    addr_l1, addr_l2 = _addr_l1(inv), _addr_l2(inv)
+    if not addr_l1:
+        addr_l1, addr_l2 = addr_l2, ""
+    if not addr_l1:
+        raise MappingError(
+            f"Brak adresu nabywcy w kartotece kontrahenta {inv.buyer.kod!r} "
+            f"(adres jest obowiazkowy na fakturze - art. 106e ust. 1 pkt 3)"
         )
 
     total_net = sum((b.net for b in buckets.values()), Decimal(0))
@@ -221,7 +239,7 @@ def map_invoice(
         buckets=buckets,
         vat_pln=vat_pln,
         p_15=declared_gross,
-        kurs_waluty_z=kurs,
+        kurs_waluty=kurs,
         seller_nip=seller_nip,
         seller_name=seller_name,
         seller_country=seller_country,
@@ -230,8 +248,8 @@ def map_invoice(
         buyer_nip=buyer_nip,
         buyer_name=inv.buyer.nazwa,
         buyer_country=inv.buyer.kraj or "PL",
-        buyer_address_l1=_addr_l1(inv) or None,
-        buyer_address_l2=_addr_l2(inv) or None,
+        buyer_address_l1=addr_l1,
+        buyer_address_l2=addr_l2 or None,
         lines=lines,
         termin_platnosci=inv.termin.isoformat() if inv.termin else None,
         forma_platnosci=forma,

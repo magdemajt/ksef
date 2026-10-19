@@ -26,7 +26,10 @@ SELLER = dict(
 
 
 def make_invoice(bufor: bool) -> SalesInvoice:
-    buyer = Contractor(knt_id=1, kod="B", nip="5261040158", nazwa="Nabywca")
+    buyer = Contractor(
+        knt_id=1, kod="B", nip="5261040158", nazwa="Nabywca",
+        ulica="Testowa", nr_domu="5", miasto="Warszawa", kod_pocztowy="00-001",
+    )
     return SalesInvoice(
         trn_id=77, numer_pelny="FA/DRAFT/1", data_dok=date(2026, 8, 1), data_wys=None,
         termin=None, razem_netto=D("100.00"), razem_vat=D("23.00"), razem_brutto=D("123.00"),
@@ -128,3 +131,53 @@ class TestSendServiceRejectsDraft:
         svc._send_batch_inner([77], date(2026, 8, 1), date(2026, 8, 31))
         assert len(gateway.sent_invoices) == 1
         assert sent.get("firma_a", 77, "test")["status"] == "accepted"
+
+
+class TestSendServiceIsolatesFailures:
+    def test_db_error_on_one_invoice_does_not_abort_batch(self, tmp_path):
+        good = make_invoice(bufor=False)
+
+        class FlakyReader(FakeReader):
+            def get_invoice(self, trn_id, date_from, date_to):
+                if trn_id == 1:
+                    raise RuntimeError("Invalid column name 'TrE_Cena'")
+                return super().get_invoice(trn_id, date_from, date_to)
+
+        class HappyGateway(RecordingGateway):
+            def wait_for_invoice(self, session, ref, timeout=90):
+                class Status:
+                    class status:
+                        code = 200
+                        description = "Sukces"
+                        details = None
+                    ksef_number = "5265877635-20260810-ABCDEF000000-00"
+                return Status()
+
+            def fetch_upo(self, session_ref, invoice_ref):
+                return b"<UPO/>"
+
+        gateway = HappyGateway()
+        svc, sent = TestSendServiceRejectsDraft()._service(tmp_path, gateway, good)
+        svc.reader = FlakyReader(good)
+
+        svc._send_batch_inner([1, 77], date(2026, 8, 1), date(2026, 8, 31))
+
+        failed = sent.get("firma_a", 1, "test")
+        assert failed["status"] == "error"
+        assert "TrE_Cena" in failed["error_detail"]
+        assert sent.get("firma_a", 77, "test")["status"] == "accepted"
+        assert len(gateway.sent_invoices) == 1
+
+    def test_failure_after_submit_says_status_unknown(self, tmp_path):
+        class TimeoutGateway(RecordingGateway):
+            def wait_for_invoice(self, session, ref, timeout=90):
+                raise TimeoutError("brak odpowiedzi")
+
+        svc, sent = TestSendServiceRejectsDraft()._service(
+            tmp_path, TimeoutGateway(), make_invoice(bufor=False)
+        )
+        svc._send_batch_inner([77], date(2026, 8, 1), date(2026, 8, 31))
+
+        row = sent.get("firma_a", 77, "test")
+        assert row["status"] == "error"
+        assert "status nieznany" in row["error_detail"]

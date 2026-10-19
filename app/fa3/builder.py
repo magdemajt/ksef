@@ -92,8 +92,6 @@ def build_fa3(inv: Fa3Invoice, system_info: str = "ksef-bridge") -> bytes:
                 _sub(fa, p14 + "W", _amount(inv.vat_pln[symbol]))
 
     _sub(fa, "P_15", _amount(inv.p_15))
-    if foreign and inv.kurs_waluty_z is not None:
-        _sub(fa, "KursWalutyZ", f"{inv.kurs_waluty_z:.6f}".rstrip("0").rstrip("."))
 
     # -- Adnotacje (wszystkie znaczniki "nie dotyczy") --
     adnotacje = _sub(fa, "Adnotacje")
@@ -121,6 +119,10 @@ def build_fa3(inv: Fa3Invoice, system_info: str = "ksef-bridge") -> bytes:
         _sub(w, "P_9A", _amount(line.cena_netto))
         _sub(w, "P_11", _amount(line.wartosc_netto))
         _sub(w, "P_12", line.stawka_symbol)
+        # KursWalutyZ w naglowku Fa dotyczy wylacznie faktur zaliczkowych (art. 106b ust. 1
+        # pkt 4) - dla zwyklej faktury walutowej kurs podaje sie na pozycji
+        if foreign and inv.kurs_waluty is not None:
+            _sub(w, "KursWaluty", _strip_decimal(inv.kurs_waluty))
 
     # -- Platnosc --
     if inv.termin_platnosci or inv.forma_platnosci:

@@ -63,7 +63,9 @@ class TestMapInvoice:
         assert fa3.vat_pln["23"] == D("98.90")  # 23.00 * 4.30
         xml = build_fa3(fa3)
         assert validate(xml) == []
-        assert b"P_14_1W" in xml and b"KursWalutyZ" in xml
+        assert b"P_14_1W" in xml
+        # kurs na pozycji; KursWalutyZ jest wylacznie dla faktur zaliczkowych
+        assert b"<KursWaluty>4.3</KursWaluty>" in xml and b"KursWalutyZ" not in xml
 
     def test_foreign_currency_without_rate_blocked(self):
         inv = make_invoice(waluta="EUR")
@@ -92,13 +94,53 @@ class TestMapInvoice:
 
     def test_mixed_rates_buckets(self):
         inv = make_invoice(
-            razem_brutto=D("183.50"),  # 100*1.23 + 50 (zw) + 10*1.05
+            razem_brutto=D("187.50"),  # 100*1.23 + 50*1.08 + 10*1.05
             lines=[
                 SalesLine(1, "A", D(1), "szt.", D("100.00"), D(23), 2, D("100.00")),
-                SalesLine(2, "B", D(1), "szt.", D("50.00"), D(0), 1, D("50.00")),
+                SalesLine(2, "B", D(1), "szt.", D("50.00"), D(8), 2, D("50.00")),
                 SalesLine(3, "C", D(1), "szt.", D("10.00"), D(5), 2, D("10.00")),
             ],
         )
         fa3 = map_invoice(inv, **SELLER)
-        assert set(fa3.buckets) == {"23", "zw", "5"}
+        assert set(fa3.buckets) == {"23", "8", "5"}
         assert validate(build_fa3(fa3)) == []
+
+    def test_exempt_blocked_without_legal_basis(self):
+        inv = make_invoice(
+            razem_brutto=D("50.00"),
+            lines=[SalesLine(1, "B", D(1), "szt.", D("50.00"), D(0), 1, D("50.00"))],
+        )
+        with pytest.raises(MappingError, match="zwolniona"):
+            map_invoice(inv, **SELLER)
+
+    def test_vat_computed_from_rate_sum_not_per_line(self):
+        # 10 x 0.10 netto @23%: per pozycja 10*0.02=0.20, od sumy 1.00*0.23=0.23
+        inv = make_invoice(
+            razem_netto=D("1.00"), razem_vat=D("0.23"), razem_brutto=D("1.23"),
+            lines=[
+                SalesLine(i, "X", D(1), "szt.", D("0.10"), D(23), 2, D("0.10"))
+                for i in range(1, 11)
+            ],
+        )
+        fa3 = map_invoice(inv, **SELLER)
+        assert fa3.buckets["23"].vat == D("0.23")
+
+    def test_buyer_address_includes_house_and_flat(self):
+        inv = make_invoice()
+        inv.buyer.nr_lokalu = "7"
+        fa3 = map_invoice(inv, **SELLER)
+        assert fa3.buyer_address_l1 == "Testowa 5 lok. 7"
+        assert fa3.buyer_address_l2 == "00-001 Warszawa"
+
+    def test_buyer_without_street_uses_city_line(self):
+        inv = make_invoice()
+        inv.buyer.ulica = inv.buyer.nr_domu = ""
+        fa3 = map_invoice(inv, **SELLER)
+        assert fa3.buyer_address_l1 == "00-001 Warszawa"
+        assert validate(build_fa3(fa3)) == []
+
+    def test_missing_buyer_address_blocked(self):
+        inv = make_invoice()
+        inv.buyer.ulica = inv.buyer.nr_domu = inv.buyer.miasto = inv.buyer.kod_pocztowy = ""
+        with pytest.raises(MappingError, match="adresu"):
+            map_invoice(inv, **SELLER)
