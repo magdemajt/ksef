@@ -139,6 +139,10 @@ class TestMapInvoice:
         assert fa3.buyer_address_l1 == "00-001 Warszawa"
         assert validate(build_fa3(fa3)) == []
 
+    def test_missing_seller_address_blocked(self):
+        with pytest.raises(MappingError, match="adresu firmy"):
+            map_invoice(make_invoice(), **{**SELLER, "seller_address_l1": " "})
+
     def test_missing_buyer_address_blocked(self):
         inv = make_invoice()
         inv.buyer.ulica = inv.buyer.nr_domu = inv.buyer.miasto = inv.buyer.kod_pocztowy = ""

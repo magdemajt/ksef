@@ -155,7 +155,7 @@ class SendService:
             xml = build_fa3(fa3)
             errors = validate(xml)
             if errors:
-                raise MappingError("; ".join(errors[:5]))
+                raise MappingError("; ".join(errors[:10]))
         except MappingError as exc:
             self.sent.upsert(
                 self.company_id, trn_id, self.env,

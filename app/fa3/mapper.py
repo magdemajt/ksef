@@ -133,6 +133,11 @@ def map_invoice(
     seller_address_l2: str,
     seller_country: str = "PL",
 ) -> Fa3Invoice:
+    if not (seller_address_l1 or "").strip():
+        raise MappingError(
+            "Brak adresu firmy (sprzedawcy) w konfiguracji - uzupelnij w "
+            "Ustawienia -> Firmy -> edytuj"
+        )
     if inv.bufor:
         raise MappingError(
             "Faktura w buforze Optimy (draft) - zatwierdz dokument przed wysylka do KSeF"

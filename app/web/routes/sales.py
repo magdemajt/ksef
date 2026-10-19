@@ -121,7 +121,7 @@ def _build_previews(context: AppContext, company_id: str, trn_ids: list[int],
             xml = build_fa3(fa3)
             errors = validate(xml)
             if errors:
-                raise MappingError("; ".join(errors[:3]))
+                raise MappingError("; ".join(errors[:10]))
         except MappingError as exc:
             bad_rows.append({"numer": inv.numer_pelny, "error": str(exc)})
             continue

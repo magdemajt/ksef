@@ -1,6 +1,6 @@
 [project]
 name = "ksef-bridge"
-version = "0.1.7"
+version = "0.1.8"
 description = "Integrator Comarch ERP Optima <-> KSeF 2.0 (wysylka faktur sprzedazy, pobieranie zakupow do rejestru VAT)"
 requires-python = ">=3.12"
 dependencies = [

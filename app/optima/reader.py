@@ -9,7 +9,7 @@ co znaleziono.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 from app.optima.models import Contractor, SalesInvoice, SalesLine
@@ -245,6 +245,10 @@ class SalesReader:
 def _as_date(value) -> date | None:
     if value is None:
         return None
+    # kolumny dat Optimy sa typu DATETIME; datetime jest podklasa date, wiec najpierw
+    # obcinamy czas - inaczej isoformat() daje '...T00:00:00' (niepoprawne TData w FA(3))
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
         return value
     return date.fromisoformat(str(value)[:10])
