@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -14,6 +15,7 @@ from app.fa3.validator import validate
 from app.state.repo import BatchRepo
 from app.web.deps import AppContext, ctx
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 STATUS_LABELS = {
@@ -99,7 +101,13 @@ def _build_previews(context: AppContext, company_id: str, trn_ids: list[int],
     ok_rows, bad_rows = [], []
     totals = {"netto": Decimal(0), "brutto": Decimal(0)}
     for trn_id in trn_ids:
-        inv = reader.get_invoice(trn_id, df, dt)
+        try:
+            inv = reader.get_invoice(trn_id, df, dt)
+        except Exception as exc:
+            # blad SQL (np. kolumna nieobecna w tej wersji Optimy) blokuje tylko te fakture
+            logger.exception("Odczyt faktury TrN_TrNID=%s z Optimy nie powiodl sie", trn_id)
+            bad_rows.append({"numer": f"TrN_TrNID={trn_id}", "error": f"Blad odczytu z Optimy: {exc}"})
+            continue
         if inv is None:
             bad_rows.append({"numer": f"TrN_TrNID={trn_id}", "error": "Nie znaleziono w bazie"})
             continue
@@ -119,6 +127,8 @@ def _build_previews(context: AppContext, company_id: str, trn_ids: list[int],
             continue
         ok_rows.append({
             "trn_id": trn_id, "numer": inv.numer_pelny,
+            # daty dokladnie tak, jak trafia do XML (P_6 pominiete, gdy rowne P_1)
+            "data_wystawienia": fa3.p_1, "data_sprzedazy": fa3.p_6 or fa3.p_1,
             "buyer_nip": inv.buyer.nip_normalized, "brutto": inv.razem_brutto,
             "waluta": inv.waluta,
         })
@@ -254,12 +264,16 @@ def sales_xml(
     context: AppContext = Depends(ctx),
 ):
     company = context.company(c)
-    reader = context.sales_reader(c)
-    inv = reader.get_invoice(
-        trn_id,
-        date.fromisoformat(date_from) - timedelta(days=366),
-        date.fromisoformat(date_to) + timedelta(days=31),
-    )
+    try:
+        reader = context.sales_reader(c)
+        inv = reader.get_invoice(
+            trn_id,
+            date.fromisoformat(date_from) - timedelta(days=366),
+            date.fromisoformat(date_to) + timedelta(days=31),
+        )
+    except Exception as exc:
+        logger.exception("Odczyt faktury TrN_TrNID=%s z Optimy nie powiodl sie", trn_id)
+        raise HTTPException(502, f"Blad odczytu z Optimy: {exc}") from exc
     if inv is None:
         raise HTTPException(404, "Nie znaleziono faktury")
     try:

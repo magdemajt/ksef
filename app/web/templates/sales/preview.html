@@ -25,10 +25,12 @@
 <div class="card">
     <h3>Do wysylki</h3>
     <table>
-        <tr><th>Numer</th><th>Nabywca (NIP)</th><th class="num">Brutto</th><th>Waluta</th><th>XML</th></tr>
+        <tr><th>Numer</th><th>Data wystawienia</th><th>Data sprzedazy</th><th>Nabywca (NIP)</th><th class="num">Brutto</th><th>Waluta</th><th>XML</th></tr>
         {% for row in ok_rows %}
         <tr>
             <td>{{ row.numer }}</td>
+            <td>{{ row.data_wystawienia }}</td>
+            <td>{{ row.data_sprzedazy }}</td>
             <td>{{ row.buyer_nip }}</td>
             <td class="num">{{ row.brutto }}</td>
             <td>{{ row.waluta }}</td>

@@ -155,4 +155,129 @@
         <button type="submit">Test uwierzytelnienia KSeF</button>
     </form>
 </div>
+
+<div class="card" id="diagnose">
+    <h3>Diagnostyka bazy Optimy (firma: {{ company.name }})</h3>
+    <form method="post" action="/settings/diagnose#diagnose" class="inline">
+        <input type="hidden" name="c" value="{{ company_id }}">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <button type="submit">Uruchom diagnostyke</button>
+    </form>
+    <span class="muted">Tylko odczyt. Sprawdza nazwy kolumn tej wersji Optimy, stawki VAT
+        uzywane w bazie i kolumny KSeF. Moze potrwac kilkanascie sekund.</span>
+
+    {% if diagnose %}
+    {% set rep = diagnose.report %}
+    <p class="muted" style="margin-top:.8rem">
+        Raport z {{ rep.generated_at }} · baza {{ rep.database }} · {{ rep.server_version }}
+        · <a href="/settings/diagnose.json?c={{ company_id }}">pobierz raport (JSON)</a>
+    </p>
+
+    <h4>Stawki VAT uzywane w bazie (12 mies.)</h4>
+    {% if diagnose.rates %}
+    <table>
+        <tr><th class="num">Stawka</th><th class="num">Flaga</th><th>Symbol w FA(3)</th></tr>
+        {% for r in diagnose.rates %}
+        <tr>
+            <td class="num">{{ r.stawka }}</td><td class="num">{{ r.flaga }}</td>
+            <td>{% if r.symbol %}{{ r.symbol }}{% else %}<span class="error-text">{{ r.error }}</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% else %}
+    <p class="error-text">{{ rep.rate_flag_combinations }}</p>
+    {% endif %}
+
+    <h4>Kolumny KSeF</h4>
+    {% if rep.ksef_columns %}
+    <table>
+        <tr><th>Tabela</th><th>Kolumna</th><th>Typ</th></tr>
+        {% for k in rep.ksef_columns %}
+        <tr><td>{{ k.table }}</td><td>{{ k.column }}</td><td>{{ k.type }}</td></tr>
+        {% endfor %}
+    </table>
+    {% else %}
+    <p class="muted">Nie znaleziono kolumn KSeF.</p>
+    {% endif %}
+
+    <h4>Podzielona platnosc (MPP)</h4>
+    <p>{% if rep.mpp_columns %}{{ rep.mpp_columns | join(', ') }}{% else %}<span class="muted">nie znaleziono kolumn MPP na TraNag</span>{% endif %}</p>
+
+    <h4>Ostatnie zatwierdzone faktury</h4>
+    {% if rep.sample_invoices is string %}
+    <p class="error-text">{{ rep.sample_invoices }}</p>
+    {% else %}
+    <table>
+        <tr><th>Numer</th><th>Data</th><th class="num">Netto</th><th class="num">VAT</th><th class="num">Brutto</th></tr>
+        {% for s in rep.sample_invoices %}
+        <tr><td>{{ s.numer }}</td><td>{{ s.data }}</td><td class="num">{{ s.netto }}</td>
+            <td class="num">{{ s.vat }}</td><td class="num">{{ s.brutto }}</td></tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+
+    <h4>Kolumny tabel</h4>
+    {% for table, cols in rep.columns.items() %}
+    <details>
+        <summary>{{ table }} ({{ cols | length }})</summary>
+        <p class="muted">{% for col in cols %}{{ col.name }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+    </details>
+    {% endfor %}
+
+    <details style="margin-top:.6rem">
+        <summary>Pelny raport</summary>
+        <pre style="max-height:30rem; overflow:auto; background:#f5f5f5; padding:.6rem; font-size:.8rem">{{ diagnose.pretty }}</pre>
+    </details>
+    {% endif %}
+
+    <h4 id="probe">Sprawdzenie pojedynczej faktury</h4>
+    <form method="post" action="/settings/diagnose/invoice#probe">
+        <input type="hidden" name="c" value="{{ company_id }}">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <input type="text" name="numer" placeholder="np. FA/12/2026" value="{{ probe.result.numer if probe else '' }}" required>
+        <button type="submit">Sprawdz w bazie</button>
+    </form>
+    <p class="muted">Pokazuje wszystkie pola faktury w bazie. Aby ustalic, gdzie Optima zapisuje
+        numer KSeF: sprawdz fakture, wpisz jej numer KSeF recznie w Optimie (zakladka KSeF
+        na formularzu), sprawdz ponownie - zmienione pola pojawia sie ponizej.</p>
+
+    {% if probe %}
+    {% if probe.changes %}
+    <p><strong>Zmiany od poprzedniego sprawdzenia:</strong></p>
+    {% if probe.changes.tranag_changed %}
+    <table>
+        <tr><th>Kolumna TraNag</th><th>Przed</th><th>Po</th></tr>
+        {% for ch in probe.changes.tranag_changed %}
+        <tr><td>{{ ch.column }}</td><td>{{ ch.before if ch.before is not none else '—' }}</td><td>{{ ch.after if ch.after is not none else '—' }}</td></tr>
+        {% endfor %}
+    </table>
+    {% else %}
+    <p class="muted">Brak zmian w TraNag.</p>
+    {% endif %}
+    {% if probe.changes.dokumenty_ksef_new %}
+    <p>Nowe/zmienione wiersze CDN.DokumentyKSeF:</p>
+    <pre style="overflow:auto; background:#f5f5f5; padding:.6rem; font-size:.8rem">{{ probe.changes.dokumenty_ksef_new | tojson(indent=2) }}</pre>
+    {% endif %}
+    {% elif not probe.had_previous %}
+    <p class="muted">Pierwsze sprawdzenie tej faktury - zapisane do porownania.</p>
+    {% endif %}
+    <details>
+        <summary>Wszystkie pola faktury {{ probe.result.numer }}</summary>
+        <table>
+            <tr><th>Kolumna</th><th>Wartosc</th></tr>
+            {% for col, val in probe.result.tranag.items() %}{% if val is not none %}
+            <tr><td>{{ col }}</td><td>{{ val }}</td></tr>
+            {% endif %}{% endfor %}
+        </table>
+    </details>
+    <details>
+        <summary>Najnowsze wiersze CDN.DokumentyKSeF</summary>
+        {% if probe.result.dokumenty_ksef_error %}
+        <p class="error-text">{{ probe.result.dokumenty_ksef_error }}</p>
+        {% else %}
+        <pre style="overflow:auto; background:#f5f5f5; padding:.6rem; font-size:.8rem">{{ probe.result.dokumenty_ksef | tojson(indent=2) }}</pre>
+        {% endif %}
+    </details>
+    {% endif %}
+</div>
 {% endblock %}

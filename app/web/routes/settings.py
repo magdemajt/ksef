@@ -1,19 +1,45 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import RedirectResponse
+import json
+from decimal import Decimal
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import RedirectResponse, Response
 
 from app import configstore
 from app.config import KsefEnv
+from app.fa3.mapper import MappingError, rate_symbol
 from app.secrets import SecretStore
 from app.web.deps import AppContext, ctx
 
 router = APIRouter()
 
 
+def _diagnose_view(context: AppContext, company_id: str) -> dict | None:
+    """Ostatni zapisany raport diagnose + mapowanie (stawka, flaga) na symbol FA(3)."""
+    raw = context.sync_state.get(company_id, "diagnose_json")
+    if not raw:
+        return None
+    report = json.loads(raw)
+    rates = []
+    combos = report.get("rate_flag_combinations")
+    if isinstance(combos, list):
+        for combo in combos:
+            try:
+                symbol, error = rate_symbol(Decimal(str(combo["stawka"])), int(combo["flaga"])), None
+            except MappingError as exc:
+                symbol, error = None, str(exc)
+            rates.append({**combo, "symbol": symbol, "error": error})
+    return {
+        "report": report,
+        "rates": rates,
+        "pretty": json.dumps(report, indent=2, ensure_ascii=False),
+    }
+
+
 def _render(request: Request, context: AppContext, company_id: str,
             message: str | None = None, message_ok: bool = True,
-            discovery=None, prefill: dict | None = None):
+            discovery=None, prefill: dict | None = None, probe: dict | None = None):
     if company_id not in context.cfg.companies:
         company_id = context.default_company_id()
     return request.app.state.templates.TemplateResponse(
@@ -24,6 +50,7 @@ def _render(request: Request, context: AppContext, company_id: str,
             "company": context.company(company_id), "active": "settings",
             "message": message, "message_ok": message_ok,
             "discovery": discovery, "prefill": prefill or {},
+            "diagnose": _diagnose_view(context, company_id), "probe": probe,
         },
     )
 
@@ -300,3 +327,74 @@ def test_ksef(
         return _render(request, context, c, "Uwierzytelnienie w KSeF OK", True)
     except Exception as exc:  # noqa: BLE001
         return _render(request, context, c, f"Blad uwierzytelnienia KSeF: {exc}", False)
+
+
+# -- diagnostyka bazy Optimy --
+
+
+@router.post("/settings/diagnose")
+def run_diagnose_route(
+    request: Request, c: str = Form(...), csrf: str = Form(...),
+    context: AppContext = Depends(ctx),
+):
+    context.check_csrf(csrf)
+    from app.optima.introspect import run_diagnose
+
+    try:
+        conn = context.optima.read_connection(context.company(c))
+    except Exception as exc:  # noqa: BLE001
+        return _render(request, context, c, f"Blad polaczenia z Optima: {exc}", False)
+    try:
+        report = run_diagnose(conn)
+    except Exception as exc:  # noqa: BLE001
+        return _render(request, context, c, f"Diagnostyka nie powiodla sie: {exc}", False)
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001, S110
+            pass
+    context.sync_state.set(c, "diagnose_json", json.dumps(report, default=str))
+    context.audit.log("diagnose_run", c, environment=context.cfg.ksef.environment)
+    return _render(request, context, c, "Diagnostyka zakonczona - raport ponizej", True)
+
+
+@router.get("/settings/diagnose.json")
+def download_diagnose(c: str, context: AppContext = Depends(ctx)):
+    raw = context.sync_state.get(c, "diagnose_json")
+    if not raw:
+        raise HTTPException(404, "Brak raportu - uruchom diagnostyke")
+    return Response(
+        content=json.dumps(json.loads(raw), indent=2, ensure_ascii=False),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="diagnose-{c}.json"'},
+    )
+
+
+@router.post("/settings/diagnose/invoice")
+def probe_invoice_route(
+    request: Request, c: str = Form(...), csrf: str = Form(...), numer: str = Form(...),
+    context: AppContext = Depends(ctx),
+):
+    context.check_csrf(csrf)
+    from app.optima.introspect import diff_probes, probe_invoice
+
+    numer = numer.strip()
+    try:
+        conn = context.optima.read_connection(context.company(c))
+        try:
+            result = probe_invoice(conn, numer)
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        return _render(request, context, c, f"Sprawdzenie faktury nie powiodlo sie: {exc}", False)
+    if result["tranag"] is None:
+        return _render(request, context, c, f"Nie znaleziono faktury sprzedazy {numer!r}", False)
+
+    key = f"probe:{numer}"
+    previous = context.sync_state.get(c, key)
+    changes = diff_probes(json.loads(previous), result) if previous else None
+    context.sync_state.set(c, key, json.dumps(result))
+    return _render(
+        request, context, c,
+        probe={"result": result, "changes": changes, "had_previous": previous is not None},
+    )

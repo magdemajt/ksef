@@ -120,6 +120,12 @@ def run_diagnose(conn) -> dict:
         ),
     }
 
+    # kandydaci na znacznik mechanizmu podzielonej platnosci (Adnotacje/P_18A)
+    report["mpp_columns"] = sorted(
+        c for c in tranag_cols
+        if any(h in c.lower() for h in ("mpp", "podziel", "split"))
+    )
+
     # probka 5 najnowszych faktur (tylko naglowki, do porownania z UI)
     try:
         cur.execute(
@@ -138,6 +144,61 @@ def run_diagnose(conn) -> dict:
         report["sample_invoices"] = f"blad: {exc}"
 
     return report
+
+
+# -- sonda pojedynczej faktury (ustalenie, gdzie Optima zapisuje numer KSeF) --
+
+
+def _plain(value) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes | bytearray):
+        return "0x" + bytes(value).hex()
+    return str(value)
+
+
+def probe_invoice(conn, numer: str) -> dict:
+    """Pelny wiersz TraNag faktury sprzedazy + najnowsze wiersze CDN.DokumentyKSeF.
+
+    Porownanie dwoch sond (przed/po recznym wpisaniu numeru KSeF w Optimie) pokazuje,
+    ktore kolumny Optima ustawia - snapshot/diff widzi tylko nowe wiersze, nie UPDATE.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM CDN.TraNag WHERE TrN_NumerPelny = ? AND TrN_TypDokumentu = 302",
+        (numer,),
+    )
+    cols = [d[0] for d in cur.description]
+    row = cur.fetchone()
+    result: dict = {"numer": numer, "tranag": None, "dokumenty_ksef": []}
+    if row is None:
+        return result
+    result["tranag"] = {c: _plain(v) for c, v in zip(cols, row)}
+    try:
+        cur.execute("SELECT TOP 5 * FROM CDN.DokumentyKSeF ORDER BY 1 DESC")
+        dcols = [d[0] for d in cur.description]
+        result["dokumenty_ksef"] = [
+            {c: _plain(v) for c, v in zip(dcols, r)} for r in cur.fetchall()
+        ]
+    except Exception as exc:
+        result["dokumenty_ksef_error"] = str(exc)
+    return result
+
+
+def diff_probes(before: dict, after: dict) -> dict:
+    """Zmienione kolumny TraNag i nowe wiersze DokumentyKSeF miedzy dwiema sondami."""
+    old_row, new_row = before.get("tranag") or {}, after.get("tranag") or {}
+    changed = [
+        {"column": c, "before": old_row.get(c), "after": new_row.get(c)}
+        for c in new_row
+        if old_row.get(c) != new_row.get(c)
+    ]
+    old_ksef = {json.dumps(r, sort_keys=True) for r in before.get("dokumenty_ksef", [])}
+    new_ksef = [
+        r for r in after.get("dokumenty_ksef", [])
+        if json.dumps(r, sort_keys=True) not in old_ksef
+    ]
+    return {"tranag_changed": changed, "dokumenty_ksef_new": new_ksef}
 
 
 # -- snapshot / diff --
