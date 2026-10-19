@@ -127,13 +127,18 @@ def build_fa3(inv: Fa3Invoice, system_info: str = "ksef-bridge") -> bytes:
             _sub(w, "KursWaluty", _strip_decimal(inv.kurs_waluty))
 
     # -- Platnosc --
-    if inv.termin_platnosci or inv.forma_platnosci:
+    if inv.termin_platnosci or inv.forma_platnosci or inv.rachunek_nr:
         platnosc = _sub(fa, "Platnosc")
         if inv.termin_platnosci:
             tp = _sub(platnosc, "TerminPlatnosci")
             _sub(tp, "Termin", inv.termin_platnosci)
         if inv.forma_platnosci:
             _sub(platnosc, "FormaPlatnosci", inv.forma_platnosci)
+        if inv.rachunek_nr:
+            rb = _sub(platnosc, "RachunekBankowy")
+            _sub(rb, "NrRB", inv.rachunek_nr)
+            if inv.nazwa_banku:
+                _sub(rb, "NazwaBanku", inv.nazwa_banku)
 
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
 

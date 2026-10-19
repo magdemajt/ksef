@@ -129,7 +129,7 @@ class TestMapInvoice:
         inv = make_invoice()
         inv.buyer.nr_lokalu = "7"
         fa3 = map_invoice(inv, **SELLER)
-        assert fa3.buyer_address_l1 == "Testowa 5 lok. 7"
+        assert fa3.buyer_address_l1 == "Testowa 5/7"
         assert fa3.buyer_address_l2 == "00-001 Warszawa"
 
     def test_buyer_without_street_uses_city_line(self):
@@ -182,3 +182,40 @@ class TestOptimaFlags:
         inv.buyer.nip_kraj = "DE"
         with pytest.raises(MappingError, match="zagraniczna"):
             map_invoice(inv, **SELLER)
+
+
+class TestAddressFormat:
+    """Uklad adresu jak w fakturach wyslanych z modulu KSeF Optimy (wizualizacja KSeF)."""
+
+    def test_seller_village_with_gmina(self):
+        from app.optima.models import format_address
+        assert format_address(
+            ulica="Źródlana", nr_domu="19", kod_pocztowy="32-080", miasto="Brzezie",
+            wojewodztwo="małopolskie", gmina="Zabierzów", powiat="krakowski", poczta="Zabierzów",
+        ) == ("Źródlana 19", "32-080 Brzezie, małopolskie, gmina Zabierzów, powiat krakowski, "
+                             "poczta Zabierzów")
+
+    def test_buyer_city_gmina_equal_to_city_omitted(self):
+        from app.optima.models import format_address
+        assert format_address(
+            ulica="ul. Krakusa", nr_domu="11", kod_pocztowy="30-535", miasto="Kraków",
+            wojewodztwo="małopolskie", gmina="Kraków", powiat="Kraków", poczta="Kraków",
+        ) == ("ul. Krakusa 11", "30-535 Kraków, małopolskie, powiat Kraków, poczta Kraków")
+
+    def test_no_street_uses_town_and_number(self):
+        from app.optima.models import format_address
+        assert format_address(nr_domu="19", kod_pocztowy="32-080", miasto="Brzezie") == (
+            "Brzezie 19", "32-080 Brzezie")
+
+
+class TestBankAccount:
+    def test_account_in_payment_section_valid_xsd(self):
+        inv = make_invoice(rachunek_nr="12105000997603123456789123", nazwa_banku="ING Bank Śląski")
+        xml = build_fa3(map_invoice(inv, **SELLER))
+        assert validate(xml) == []
+        assert b"<NrRB>12105000997603123456789123</NrRB>" in xml
+        assert "<NazwaBanku>ING Bank Śląski</NazwaBanku>".encode() in xml
+
+    def test_no_account_no_bank_element(self):
+        xml = build_fa3(map_invoice(make_invoice(), **SELLER))
+        assert b"RachunekBankowy" not in xml

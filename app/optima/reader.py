@@ -11,6 +11,7 @@ nie z karty kontrahenta: faktura musi miec dane z chwili wystawienia.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -99,6 +100,7 @@ class SalesReader:
                    T.TrN_PodNazwa1, T.TrN_PodNazwa2, T.TrN_PodNazwa3,
                    T.TrN_PodUlica, T.TrN_PodNrDomu, T.TrN_PodNrLokalu,
                    T.TrN_PodMiasto, T.TrN_PodKodPocztowy,
+                   T.TrN_PodWojewodztwo, T.TrN_PodPowiat, T.TrN_PodGmina, T.TrN_PodPoczta,
                    ISNULL(T.TrN_Bufor, 0),
                    {', '.join(extras)}
             FROM CDN.TraNag T
@@ -130,6 +132,7 @@ class SalesReader:
                    K.Knt_Nazwa1, NULL, NULL,
                    NULL, NULL, NULL,
                    NULL, NULL,
+                   NULL, NULL, NULL, NULL,
                    ISNULL(T.TrN_Bufor, 0),
                    'PLN', NULL, NULL, NULL, NULL, NULL, 0, 0
             FROM CDN.TraNag T
@@ -149,7 +152,8 @@ class SalesReader:
             trn_id, numer, data_wys, data_ope, termin,
             netto, vat, brutto, korekta, fpl_nazwa,
             knt_id, knt_kod, nip_kraj, nip, n1, n2, n3,
-            ulica, nr_domu, nr_lokalu, miasto, kod_p, bufor,
+            ulica, nr_domu, nr_lokalu, miasto, kod_p,
+            wojewodztwo, powiat, gmina, poczta, bufor,
             waluta, kurs_l, kurs_m, ksef_nr, ksef_status, ksef_ref, no_ksef, split_pay,
         ) = row
         buyer = None
@@ -165,6 +169,10 @@ class SalesReader:
                 nr_lokalu=_s(nr_lokalu),
                 miasto=_s(miasto),
                 kod_pocztowy=_s(kod_p),
+                wojewodztwo=_s(wojewodztwo),
+                powiat=_s(powiat),
+                gmina=_s(gmina),
+                poczta=_s(poczta),
             )
         return SalesInvoice(
             trn_id=trn_id,
@@ -229,12 +237,82 @@ class SalesReader:
             )
         return lines
 
+    def get_bank_account(self, trn_id: int, numer: str) -> tuple[str, str | None] | None:
+        """Rachunek firmy, na ktory nabywca ma zaplacic: platnosc dokumentu
+        (BnkZdarzenia.BZd_BRaID) -> rachunek w rejestrze bankowym (BnkRachunki).
+
+        Nazwa kolumny z numerem w BnkRachunki nie jest znana - numer rozpoznawany po
+        wartosci (NRB: 26 cyfr). Rejestr kasowy nie ma numeru -> None.
+        """
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT R.* FROM CDN.BnkZdarzenia Z "
+            "JOIN CDN.BnkRachunki R ON R.BRa_BRaID = Z.BZd_BRaID "
+            "WHERE Z.BZd_DokumentID = ? AND Z.BZd_NumerPelny = ? ORDER BY Z.BZd_BZdID",
+            (trn_id, numer),
+        )
+        cols = [d[0] for d in cur.description]
+        for row in cur.fetchall():
+            values = dict(zip(cols, row))
+            nr = _account_number(values)
+            if nr:
+                return nr, self._bank_name(values)
+        return None
+
+    def _bank_name(self, account_row: dict) -> str | None:
+        bna_col = next((c for c in account_row if c.lower().endswith("_bnaid")), None)
+        if not bna_col or account_row[bna_col] is None:
+            return None
+        try:
+            cur = self.conn.cursor()
+            cur.execute("SELECT * FROM CDN.BnkNazwy WHERE BNa_BNaId = ?", (account_row[bna_col],))
+            cols = [d[0] for d in cur.description]
+            row = cur.fetchone()
+        except Exception:
+            logger.exception("Odczyt nazwy banku nie powiodl sie")
+            return None
+        if row is None:
+            return None
+        for col, value in zip(cols, row):
+            if col.lower().split("_", 1)[-1] == "nazwa" and _s(value):
+                return _s(value)
+        return None
+
     def get_invoice(self, trn_id: int, date_hint_from: date, date_hint_to: date) -> SalesInvoice | None:
         for inv in self.list_sales(date_hint_from, date_hint_to):
             if inv.trn_id == trn_id:
                 inv.lines = self.get_lines(trn_id)
+                try:
+                    account = self.get_bank_account(trn_id, inv.numer_pelny)
+                except Exception:
+                    # brak rachunku widac w podgladzie - nie blokuje odczytu faktury
+                    logger.exception("Odczyt rachunku bankowego faktury %s nie powiodl sie", trn_id)
+                    account = None
+                if account:
+                    inv.rachunek_nr, inv.nazwa_banku = account
                 return inv
         return None
+
+
+NRB_RE = re.compile(r"^(PL)?(\d{26})$")
+ACCOUNT_SUFFIXES = ("rachuneknr", "nrrachunku", "iban", "rachunek")
+
+
+def _account_number(row: dict) -> str | None:
+    """Polski numer rachunku (26 cyfr NRB) z wiersza BnkRachunki - najpierw kolumny
+    o nazwach rachunkowych, potem dowolna kolumna z wartoscia w formacie NRB."""
+    def nrb(value) -> str | None:
+        if not isinstance(value, str):
+            return None
+        match = NRB_RE.match(re.sub(r"[\s-]", "", value).upper())
+        return match.group(2) if match else None
+
+    named = [c for c in row if c.lower().split("_", 1)[-1] in ACCOUNT_SUFFIXES]
+    for col in named + [c for c in row if c not in named]:
+        found = nrb(row[col])
+        if found:
+            return found
+    return None
 
 
 def _s(value) -> str:

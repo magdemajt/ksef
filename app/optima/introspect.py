@@ -18,10 +18,12 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
+from app.optima.models import format_address
+
 WRITE_TABLES = ("VatNag", "VatTab", "BnkZdarzenia")
 INTEREST_TABLES = (
     "TraNag", "TraElem", "VatNag", "VatTab", "BnkZdarzenia", "DokumentyKSeF", "Kontrahenci",
-    "Firma", "Pieczatki",
+    "Firma", "Pieczatki", "BnkRachunki", "BnkNazwy",
 )
 
 
@@ -216,6 +218,10 @@ _ADDRESS_FIELDS = {
     "nr_lokalu": ("nrlokalu",),
     "miasto": ("miasto", "miejscowosc"),
     "kod_pocztowy": ("kodpocztowy", "kodpoczt"),
+    "wojewodztwo": ("wojewodztwo",),
+    "gmina": ("gmina",),
+    "powiat": ("powiat",),
+    "poczta": ("poczta",),
 }
 POSTCODE_RE = re.compile(r"^\d{2}-\d{3}$")
 COMPANY_TABLES = ("Pieczatki", "Firma")
@@ -262,22 +268,22 @@ def find_company_address(conn) -> list[dict]:
             def get(field: str) -> str:
                 return (row.get(found[field]) or "").strip() if field in found else ""
 
-            street = " ".join(p for p in (get("ulica"), get("nr_domu")) if p)
-            if get("nr_lokalu"):
-                street += f" lok. {get('nr_lokalu')}"
             postcode = get("kod_pocztowy") or _postcode_in_row(row)
             city = get("miasto")
             if POSTCODE_RE.match(city.split(" ", 1)[0]):
                 postcode = ""  # miejscowosc zapisana razem z kodem
-            line2 = " ".join(p for p in (postcode, city) if p)
-            if not (street or line2):
+            line1, line2 = format_address(
+                get("ulica"), get("nr_domu"), get("nr_lokalu"), postcode, city,
+                get("wojewodztwo"), get("gmina"), get("powiat"), get("poczta"),
+            )
+            if not line1:
                 continue
             candidates.append({
                 "source": f"CDN.{table}",
                 "nazwa": " ".join(p for p in (get("nazwa"), get("nazwa2")) if p),
                 "nip": get("nip"),
-                "address_line1": street or line2,
-                "address_line2": line2 if street else "",
+                "address_line1": line1,
+                "address_line2": line2,
             })
     return candidates
 
@@ -333,6 +339,23 @@ def probe_invoice(conn, numer: str) -> dict:
             result["linked"][table] = _dicts(cur)
         except Exception as exc:
             result["linked"][table] = [{"_blad": str(exc)}]
+    try:
+        # platnosci faktury i rachunek firmy (zrodlo Platnosc/RachunekBankowy)
+        cur.execute(
+            "SELECT * FROM CDN.BnkZdarzenia WHERE BZd_DokumentID = ? AND BZd_NumerPelny = ?",
+            (int(tranag["TrN_TrNID"]), numer),
+        )
+        payments = result["linked"]["BnkZdarzenia"] = _dicts(cur)
+        bra_ids = sorted({int(p["BZd_BRaID"]) for p in payments if p.get("BZd_BRaID")})
+        if bra_ids:
+            placeholders = ",".join("?" * len(bra_ids))
+            cur.execute(
+                f"SELECT * FROM CDN.BnkRachunki WHERE BRa_BRaID IN ({placeholders})",  # noqa: S608
+                tuple(bra_ids),
+            )
+            result["linked"]["BnkRachunki"] = _dicts(cur)
+    except Exception as exc:
+        result["linked"]["BnkZdarzenia"] = [{"_blad": str(exc)}]
     try:
         # wiersze przypiete do faktury + najnowsze (gdyby Optima nie ustawiala DKF_TrNId)
         cur.execute(

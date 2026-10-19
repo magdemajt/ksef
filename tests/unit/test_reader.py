@@ -71,7 +71,7 @@ OPTIMA_ROW = (
     1032, "FS/11/2026", datetime(2026, 10, 19), datetime(2026, 9, 30), datetime(2026, 11, 14),
     D("25707.23"), D("5912.66"), D("31619.89"), 0, "przelew",
     7, "KLIENT", "PL", "5261040158", "Klient", "Sp. z o.o.", "",
-    "Testowa ", "5", "", "Kraków", "30-001", 0,
+    "Testowa ", "5", "", "Kraków", "30-001", "małopolskie", "Kraków", "Kraków", "Kraków", 0,
     "PLN", D(1), D(1), "", "Nie wysłano", None, 0, 1,
 )
 
@@ -91,3 +91,36 @@ def test_row_uses_document_snapshot_and_flags():
     assert inv.buyer.ulica == "Testowa" and inv.buyer.nip_kraj == "PL"
     assert inv.optima_ksef_number is None  # TrN_NrKSeF = '' (NOT NULL)
     assert inv.split_payment is True and inv.optima_nie_wysylaj is False
+    assert inv.buyer.address_lines() == ("Testowa 5", "30-001 Kraków, małopolskie, powiat Kraków, poczta Kraków")
+
+
+def test_account_number_found_by_value():
+    from app.optima.reader import _account_number
+    row = {"BRa_BRaID": 3, "BRa_Akronim": "ING", "BRa_Opis": "12 1050 0099 7603 1234 5678 9123"}
+    assert _account_number(row) == "12105000997603123456789123"
+    assert _account_number({"BRa_RachunekNr": "PL12105000997603123456789123"}) == "12105000997603123456789123"
+    assert _account_number({"BRa_Akronim": "KASA", "BRa_Opis": "123"}) is None
+
+
+def test_bank_account_from_payment_and_bank_name():
+    class Cur:
+        def execute(self, sql, params=()):
+            if "BnkZdarzenia" in sql:
+                assert params == (1032, "FS/11/2026")
+                self.description = [("BRa_BRaID",), ("BRa_RachunekNr",), ("BRa_BNaID",)]
+                self.rows = [(3, "12 1050 0099 7603 1234 5678 9123", 7)]
+            else:
+                assert params == (7,)
+                self.description = [("BNa_BNaId",), ("BNa_Nazwa",)]
+                self.rows = [(7, "ING Bank Śląski ")]
+        def fetchall(self):
+            return self.rows
+        def fetchone(self):
+            return self.rows[0]
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+
+    assert SalesReader(Conn()).get_bank_account(1032, "FS/11/2026") == (
+        "12105000997603123456789123", "ING Bank Śląski")

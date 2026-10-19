@@ -25,7 +25,7 @@
 <div class="card">
     <h3>Do wysylki</h3>
     <table>
-        <tr><th>Numer</th><th>Data wystawienia</th><th>Data sprzedazy</th><th>Nabywca (NIP)</th><th class="num">Brutto</th><th>Waluta</th><th>XML</th></tr>
+        <tr><th>Numer</th><th>Data wystawienia</th><th>Data sprzedazy</th><th>Nabywca (NIP)</th><th class="num">Brutto</th><th>Waluta</th><th>Rachunek</th><th>XML</th></tr>
         {% for row in ok_rows %}
         <tr>
             <td>{{ row.numer }}</td>
@@ -34,6 +34,8 @@
             <td>{{ row.buyer_nip }}</td>
             <td class="num">{{ row.brutto }}</td>
             <td>{{ row.waluta }}</td>
+            <td>{% if row.rachunek %}{{ row.rachunek }}{% if row.bank %}<div class="muted">{{ row.bank }}</div>{% endif %}
+                {% else %}<span class="error-text">brak - nie znaleziono w Optimie</span>{% endif %}</td>
             <td><a href="/sales/{{ row.trn_id }}/xml?c={{ company_id }}&date_from={{ date_from }}&date_to={{ date_to }}" target="_blank">podglad</a></td>
         </tr>
         {% endfor %}

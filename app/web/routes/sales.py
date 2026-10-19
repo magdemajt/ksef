@@ -134,6 +134,7 @@ def _build_previews(context: AppContext, company_id: str, trn_ids: list[int],
             "trn_id": trn_id, "numer": inv.numer_pelny,
             # daty dokladnie tak, jak trafia do XML (P_6 pominiete, gdy rowne P_1)
             "data_wystawienia": fa3.p_1, "data_sprzedazy": fa3.p_6 or fa3.p_1,
+            "rachunek": fa3.rachunek_nr, "bank": fa3.nazwa_banku,
             "buyer_nip": inv.buyer.nip_normalized, "brutto": inv.razem_brutto,
             "waluta": inv.waluta,
         })

@@ -121,6 +121,8 @@ class Fa3Invoice:
     termin_platnosci: str | None = None
     forma_platnosci: str | None = None
     mpp: bool = False  # Adnotacje/P_18A - mechanizm podzielonej platnosci
+    rachunek_nr: str | None = None  # Platnosc/RachunekBankowy/NrRB
+    nazwa_banku: str | None = None
 
 
 def _q2(value: Decimal) -> Decimal:
@@ -217,9 +219,7 @@ def map_invoice(
         if RATE_BUCKETS[symbol][1] is not None:
             bucket.vat = _q2(bucket.net * Decimal(symbol) / Decimal(100))
 
-    addr_l1, addr_l2 = _addr_l1(inv), _addr_l2(inv)
-    if not addr_l1:
-        addr_l1, addr_l2 = addr_l2, ""
+    addr_l1, addr_l2 = inv.buyer.address_lines()
     if not addr_l1:
         raise MappingError(
             f"Brak adresu nabywcy w kartotece kontrahenta {inv.buyer.kod!r} "
@@ -273,17 +273,7 @@ def map_invoice(
         termin_platnosci=inv.termin.isoformat() if inv.termin else None,
         forma_platnosci=forma,
         mpp=inv.split_payment,
+        rachunek_nr=inv.rachunek_nr,
+        nazwa_banku=inv.nazwa_banku,
     )
 
-
-def _addr_l1(inv: SalesInvoice) -> str:
-    b = inv.buyer
-    parts = [b.ulica, b.nr_domu]
-    if b.nr_lokalu:
-        parts.append(f"lok. {b.nr_lokalu}")
-    return " ".join(p for p in parts if p).strip()
-
-
-def _addr_l2(inv: SalesInvoice) -> str:
-    b = inv.buyer
-    return " ".join(p for p in (b.kod_pocztowy, b.miasto) if p).strip()
