@@ -8,7 +8,13 @@ from fastapi.responses import RedirectResponse, Response
 
 from app.fa3.parser import parse_invoice
 from app.ksef.ratelimit import RateLimitExceeded
-from app.optima.contractors import ksef_number_known, vat_register_has
+from app.optima.contractors import (
+    find_by_nip,
+    ksef_number_known,
+    normalize_nip,
+    payment_form_guids,
+    vat_register_has,
+)
 from app.optima.writer import (
     ContractorMissingError,
     PurchaseWriter,
@@ -25,6 +31,7 @@ STATUS_LABELS = {
     "needs_contractor": "brak kontrahenta",
     "already_in_optima": "juz w Optimie",
     "exported": "wyeksportowana",
+    "xml_exported": "w pliku XML",
     "skipped": "pominieta",
     "error": "blad",
 }
@@ -104,10 +111,54 @@ def purchases_export(
         invoices.append((row, parsed))
 
     if mode == "xml":
-        xml = export_as_xml([p for _, p in invoices], company.purchase_register)
+        # Bez bazy Optimy nie da sie sprawdzic duplikatow ani dopasowac kontrahentow -
+        # natywny modul KSeF Optimy mogl juz pobrac te same faktury.
+        try:
+            read_conn = context.optima.read_connection(company)
+        except Exception as exc:  # noqa: BLE001
+            return _render_list(
+                request, context, c,
+                sync_result=f"Eksport XML przerwany - brak polaczenia z baza Optimy: {exc}",
+            )
+        to_export, contractors, skipped = [], {}, 0
+        for row, parsed in invoices:
+            invoice_id = row["id"]
+            if ksef_number_known(read_conn, row["ksef_number"]) or vat_register_has(
+                read_conn, parsed.seller_nip, parsed.invoice_number
+            ):
+                context.downloads.set_status(invoice_id, "already_in_optima")
+                skipped += 1
+                continue
+            if (parsed.currency or "PLN").upper() != "PLN":
+                context.downloads.set_status(
+                    invoice_id, "error",
+                    error_detail=f"Waluta {parsed.currency} - eksport XML obsluguje tylko PLN",
+                )
+                skipped += 1
+                continue
+            nip = normalize_nip(parsed.seller_nip)
+            if nip not in contractors:
+                contractor = find_by_nip(read_conn, nip)
+                if contractor is not None:
+                    contractors[nip] = contractor
+            to_export.append((row, parsed))
+        if not to_export:
+            return _render_list(
+                request, context, c,
+                sync_result=f"Nic do eksportu - pominieto {skipped} (juz w Optimie lub blad)",
+            )
+        xml = export_as_xml(
+            [p for _, p in to_export], company.purchase_register, company.offline_target_id,
+            contractors=contractors, payment_form_ids=payment_form_guids(read_conn),
+        )
+        for row, _ in to_export:
+            context.downloads.set_status(
+                row["id"], "xml_exported", exported_at=datetime.now(UTC).isoformat()
+            )
         context.audit.log(
             "purchases_export_xml", c, environment=env,
-            details={"ids": ids, "count": len(invoices)},
+            details={"ids": [row["id"] for row, _ in to_export], "count": len(to_export),
+                     "skipped": skipped},
         )
         return Response(
             content=xml,

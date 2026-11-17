@@ -41,6 +41,9 @@ auth_method = "token"
 ksef_cert_path = ""
 # Nazwa rejestru VAT zakupu (VaN_Rejestr), do ktorego eksportujemy faktury z KSeF
 purchase_register = "ZAKUP"
+# Identyfikator bazy w Optimie (Konfiguracja -> Firma -> Ogolne -> Praca rozproszona);
+# trafia do pliku XML zakupow jako BAZA_DOC_ID
+offline_target_id = ""
 # Numeracja Lp w rejestrze VAT: month (restart co miesiac) | year (ciagla w roku)
 # Weryfikowane przez `ksef-bridge diagnose` na zywej bazie.
 lp_numbering = "month"

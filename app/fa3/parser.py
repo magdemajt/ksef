@@ -70,6 +70,13 @@ class PurchaseInvoice:
     bank_account: str | None
     vat_lines: list[VatLine] = field(default_factory=list)
     invoice_type: str = "VAT"
+    sale_date: str | None = None  # P_6 (data dostawy/wykonania uslugi)
+    seller_address_l1: str = ""
+    seller_address_l2: str = ""
+    payment_form: str | None = None  # Platnosc/FormaPlatnosci (kod 1-7)
+    cash_method: bool = False  # Adnotacje/P_16 = 1
+    split_payment: bool = False  # Adnotacje/P_18A = 1
+    corrected_number: str | None = None  # DaneFaKorygowanej/NrFaKorygowanej
 
 
 def _find_ns(root: etree._Element) -> str:
@@ -154,10 +161,12 @@ def parse_invoice(xml: bytes, ksef_number: str | None = None) -> PurchaseInvoice
 
     payment_due = None
     bank_account = None
+    payment_form = None
     platnosc = fa.find(q("Platnosc"))
     if platnosc is not None:
         payment_due = _text(platnosc.find(q("TerminPlatnosci/Termin"))) or None
         bank_account = _text(platnosc.find(q("RachunekBankowy/NrRB"))) or None
+        payment_form = _text(platnosc.find(q("FormaPlatnosci"))) or None
 
     return PurchaseInvoice(
         ksef_number=ksef_number,
@@ -175,4 +184,11 @@ def parse_invoice(xml: bytes, ksef_number: str | None = None) -> PurchaseInvoice
         bank_account=bank_account,
         vat_lines=vat_lines,
         invoice_type=invoice_type,
+        sale_date=_text(fa.find(q("P_6"))) or None,
+        seller_address_l1=seller_addr_parts[0],
+        seller_address_l2=seller_addr_parts[1],
+        payment_form=payment_form,
+        cash_method=_text(fa.find(q("Adnotacje/P_16"))) == "1",
+        split_payment=_text(fa.find(q("Adnotacje/P_18A"))) == "1",
+        corrected_number=_text(fa.find(q("DaneFaKorygowanej/NrFaKorygowanej"))) or None,
     )

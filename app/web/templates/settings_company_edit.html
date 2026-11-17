@@ -32,6 +32,9 @@
                 <option value="year" {% if edit_company.lp_numbering == 'year' %}selected{% endif %}>roczna</option>
             </select>
         </p>
+        <p>Identyfikator bazy w pracy rozproszonej:
+            <input type="text" name="offline_target_id" value="{{ edit_company.offline_target_id }}" size="8" placeholder="np. KSIEG">
+            <span class="muted">Optima: Konfiguracja → Firma → Ogólne → Praca rozproszona; trafia do pliku XML zakupow</span></p>
         <p>
             Uwierzytelnienie KSeF:
             <select name="auth_method" onchange="document.getElementById('cert-row').style.display = this.value === 'ksef_cert' ? '' : 'none'; document.getElementById('token-row').style.display = this.value === 'token' ? '' : 'none';">

@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+import re
+
 from app.optima.models import Contractor
+
+logger = logging.getLogger(__name__)
+_GUID_RE = re.compile(r"^[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}$")
 
 
 def normalize_nip(nip: str) -> str:
@@ -33,7 +39,54 @@ def find_by_nip(conn, nip: str) -> Contractor | None:
         kod=kod or "",
         nip=knt_nip or "",
         nazwa=" ".join(p for p in (n1, n2, n3) if p),
+        guid=_row_guid(conn, "SELECT * FROM CDN.Kontrahenci WHERE Knt_KntId = ?", (knt_id,)),
     )
+
+
+def _guid_text(value) -> str:
+    text = str(value or "").strip().strip("{}").upper()
+    return text if _GUID_RE.match(text) else ""
+
+
+def _row_guid(conn, query: str, params: tuple) -> str:
+    """GUID wiersza - kolumna rozpoznawana po nazwie (*GUID), bo nie jest udokumentowana."""
+    try:
+        cur = conn.cursor()
+        cur.execute(query, params)
+        cols = [d[0] for d in cur.description]
+        row = cur.fetchone()
+    except Exception:
+        logger.exception("Odczyt GUID nie powiodl sie")
+        return ""
+    if row is None:
+        return ""
+    for col, value in zip(cols, row):
+        if col.lower().endswith("guid") and _guid_text(value):
+            return _guid_text(value)
+    return ""
+
+
+def payment_form_guids(conn) -> dict[str, str]:
+    """Nazwa formy platnosci (male litery) -> GUID; do pliku pracy rozproszonej."""
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM CDN.FormyPlatnosci")
+        cols = [d[0] for d in cur.description]
+        rows = cur.fetchall()
+    except Exception:
+        logger.exception("Odczyt form platnosci nie powiodl sie")
+        return {}
+    name_col = next((c for c in cols if c.lower().split("_", 1)[-1] == "nazwa"), None)
+    guid_col = next((c for c in cols if c.lower().endswith("guid")), None)
+    if not name_col or not guid_col:
+        return {}
+    found = {}
+    for row in rows:
+        values = dict(zip(cols, row))
+        name, guid = (values[name_col] or "").strip().lower(), _guid_text(values[guid_col])
+        if name and guid:
+            found.setdefault(name, guid)
+    return found
 
 
 def ksef_number_known(conn, ksef_number: str) -> bool:

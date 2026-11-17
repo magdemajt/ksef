@@ -1,12 +1,34 @@
 from datetime import date
 from decimal import Decimal as D
 
+import pytest
+from lxml import etree
+
 from app.fa3.builder import build_fa3
 from app.fa3.mapper import map_invoice
 from app.fa3.parser import parse_invoice
 from app.fa3.validator import validate
 from app.optima.models import Contractor, SalesInvoice, SalesLine
-from app.optima.writer import export_as_xml
+from app.optima.writer import UnsupportedInvoiceError, export_as_xml
+
+# kolejnosc elementow wpisu REJESTR_ZAKUPU_VAT z eksportu pracy rozproszonej Optimy 2026
+OPTIMA_RECORD_ORDER = [
+    "ID_ZRODLA", "MODUL", "TYP", "REJESTR", "DATA_WYSTAWIENIA", "DATA_ZAKUPU", "DATA_WPLYWU",
+    "TERMIN", "DATA_DATAOBOWIAZKUPODATKOWEGO", "DATA_DATAPRAWAODLICZENIA", "NUMER", "KOREKTA",
+    "KOREKTA_NUMER", "WEWNETRZNA", "METODA_KASOWA", "FISKALNA", "DETALICZNA", "EKSPORT",
+    "FINALNY", "PODATNIK_CZYNNY", "IDENTYFIKATOR_KSIEGOWY", "TYP_PODMIOTU", "PODMIOT",
+    "PODMIOT_ID", "PODMIOT_NIP", "NAZWA1", "NAZWA2", "NAZWA3", "NIP_KRAJ", "NIP", "KRAJ",
+    "WOJEWODZTWO", "POWIAT", "GMINA", "ULICA", "NR_DOMU", "NR_LOKALU", "MIASTO",
+    "KOD_POCZTOWY", "POCZTA", "DODATKOWE", "PESEL", "ROLNIK", "TYP_PLATNIKA", "PLATNIK",
+    "PLATNIK_ID", "PLATNIK_NIP", "PLATNIK_RACHUNEK_NR", "KATEGORIA", "KATEGORIA_ID", "OPIS",
+    "FORMA_PLATNOSCI", "FORMA_PLATNOSCI_ID", "DEKLARACJA_VAT7", "DEKLARACJA_VATUE", "WALUTA",
+    "KURS_WALUTY", "NOTOWANIE_WALUTY_ILE", "NOTOWANIE_WALUTY_ZA_ILE", "DATA_KURSU",
+    "KURS_DO_KSIEGOWANIA", "KURS_WALUTY_2", "NOTOWANIE_WALUTY_ILE_2",
+    "NOTOWANIE_WALUTY_ZA_ILE_2", "DATA_KURSU_2", "PLATNOSC_VAT_W_PLN", "AKCYZA_NA_WEGIEL",
+    "AKCYZA_NA_WEGIEL_KOLUMNA_KPR", "JPK_FA", "MPP", "NR_KSEF", "KSEF_DATA_PRZYJECIA",
+    "DODATKOWY_OPIS", "POZYCJE", "KWOTY_DODATKOWE", "PLATNOSCI", "DOKUMENTY_OBD", "KODY_JPK",
+    "ATRYBUTY",
+]
 
 
 def _built_invoice_xml() -> bytes:
@@ -48,13 +70,83 @@ class TestRoundTrip:
         assert parsed.payment_due == "2026-08-20"
 
     def test_praca_rozproszona_export(self):
+        parsed = parse_invoice(_built_invoice_xml(), "5265877635-20260803-1D0168800247-33")
+        known = Contractor(
+            knt_id=7, kod="SPRZEDAWCA", nip="5265877635", nazwa="Sprzedawca",
+            guid="ED81CF2F-9E96-484B-9684-D2D3243DF874",
+        )
+        out = export_as_xml(
+            [parsed], "ZAKUP", "KSIEG",
+            contractors={"5265877635": known},
+            payment_form_ids={"przelew": "D18D8E4B-C18E-4AB8-8876-6A67813CA4D8"},
+        )
+        root = etree.fromstring(out)
+        ns = {"o": "http://www.comarch.pl/cdn/optima/offline"}
+        assert root.tag == "{http://www.comarch.pl/cdn/optima/offline}ROOT"
+        section = root.find("o:REJESTRY_ZAKUPU_VAT", ns)
+        assert [etree.QName(e).localname for e in section][:4] == [
+            "WERSJA", "BAZA_ZRD_ID", "BAZA_DOC_ID", "REJESTR_ZAKUPU_VAT",
+        ]
+        assert section.findtext("o:BAZA_ZRD_ID", namespaces=ns) == "KSEF"
+        assert section.findtext("o:BAZA_DOC_ID", namespaces=ns) == "KSIEG"
+        rec = section.find("o:REJESTR_ZAKUPU_VAT", ns)
+
+        def get(path):
+            return rec.findtext("/".join(f"o:{part}" for part in path.split("/")), namespaces=ns)
+
+        assert get("REJESTR") == "ZAKUP"
+        assert get("NUMER") == "FA/RT/1"
+        assert get("DATA_WYSTAWIENIA") == "2026-08-01"
+        # wplyw = data przyjecia w KSeF (z numeru KSeF); odliczenie nie wczesniej niz wplyw
+        assert get("DATA_WPLYWU") == "2026-08-03"
+        assert get("KSEF_DATA_PRZYJECIA") == "2026-08-03"
+        assert get("DATA_DATAPRAWAODLICZENIA") == "2026-08-03"
+        assert get("DEKLARACJA_VAT7") == "2026-08"
+        assert get("TERMIN") == "2026-08-20"
+        assert get("NR_KSEF") == "5265877635-20260803-1D0168800247-33"
+        assert get("PODMIOT") == "SPRZEDAWCA"
+        assert get("PODMIOT_ID") == "ED81CF2F-9E96-484B-9684-D2D3243DF874"
+        assert get("NIP") == "5265877635"
+        assert get("ULICA") == "ul. X 1"
+        assert get("KOD_POCZTOWY") == "00-002"
+        assert get("MIASTO") == "Warszawa"
+        assert get("FORMA_PLATNOSCI_ID") == "D18D8E4B-C18E-4AB8-8876-6A67813CA4D8"
+        lines = rec.findall("o:POZYCJE/o:POZYCJA", ns)
+        assert [(p.findtext("o:STAWKA_VAT", namespaces=ns), p.findtext("o:NETTO", namespaces=ns),
+                 p.findtext("o:VAT", namespaces=ns)) for p in lines] == [
+            ("23", "100", "23"), ("8", "50", "4"),
+        ]
+        assert get("PLATNOSCI/PLATNOSC/KWOTA_PLAT") == "177"
+        assert get("PLATNOSCI/PLATNOSC/KIERUNEK") == "rozchód"
+        assert get("PLATNOSCI/PLATNOSC/PLAT_SPLIT_KWOTA_VAT") == "27"
+
+    def test_praca_rozproszona_element_order_matches_optima_export(self):
+        """Kolejnosc elementow wpisu jak w eksporcie Optimy 2026 (pola opcjonalne pominiete)."""
+        parsed = parse_invoice(_built_invoice_xml(), "5265877635-20260803-1D0168800247-33")
+        rec = etree.fromstring(export_as_xml([parsed], "ZAKUP"))[0][3]
+        tags = [etree.QName(e).localname for e in rec]
+        optional = ("KATEGORIA", "KATEGORIA_ID", "PLATNIK_RACHUNEK_NR")  # brak w fakturze testowej
+        expected = [t for t in OPTIMA_RECORD_ORDER if t not in optional]
+        assert tags == expected
+        assert [etree.QName(e).localname for e in rec.find("{*}POZYCJE")[0]] == [
+            "LP", "STAWKA_VAT", "STATUS_VAT", "NETTO", "VAT", "NETTO_SYS", "VAT_SYS",
+            "NETTO_SYS2", "VAT_SYS2", "RODZAJ_ZAKUPU", "ODLICZENIA_VAT", "KOLUMNA_KPR",
+            "KOLUMNA_RYCZALT",
+        ]
+
+    def test_praca_rozproszona_unknown_contractor_and_stable_ids(self):
+        parsed = parse_invoice(_built_invoice_xml(), "5265877635-20260803-1D0168800247-33")
+        first = export_as_xml([parsed], "ZAKUP")
+        assert first == export_as_xml([parsed], "ZAKUP")  # ponowny eksport = te same GUID-y
+        rec = etree.fromstring(first)[0][3]
+        assert rec.findtext("{*}PODMIOT") == "5265877635"  # brak kartoteki -> akronim = NIP
+        assert len(rec.findtext("{*}PODMIOT_ID")) == 36
+
+    def test_praca_rozproszona_rejects_foreign_currency(self):
         parsed = parse_invoice(_built_invoice_xml(), "KSEF-RT-1")
-        out = export_as_xml([parsed], "ZAKUP")
-        text = out.decode()
-        assert "<REJESTR_ZAKUPU_VAT>" in text
-        assert "<NUMER_FAKTURY>FA/RT/1</NUMER_FAKTURY>" in text
-        assert "<WARTOSC_NETTO>100.00</WARTOSC_NETTO>" in text
-        assert "<STATUS_STAWKI_VAT>opodatkowana</STATUS_STAWKI_VAT>" in text
+        parsed.currency = "EUR"
+        with pytest.raises(UnsupportedInvoiceError):
+            export_as_xml([parsed], "ZAKUP")
 
 
 class TestValidator:

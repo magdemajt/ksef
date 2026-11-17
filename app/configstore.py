@@ -32,6 +32,7 @@ COMPANY_FIELDS = {
     "auth_method": False,
     "ksef_cert_path": False,
     "purchase_register": False,
+    "offline_target_id": False,
     "lp_numbering": False,
 }
 

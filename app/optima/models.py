@@ -51,6 +51,7 @@ class Contractor:
     poczta: str = ""
     # prefiks kraju NIP z dokumentu (TrN_PodNipKraj); "" lub "PL" = nabywca krajowy
     nip_kraj: str = ""
+    guid: str = ""  # GUID kartoteki - identyfikator w plikach pracy rozproszonej
 
     def address_lines(self) -> tuple[str, str]:
         return format_address(

@@ -60,6 +60,9 @@ class CompanyConfig(BaseModel):
     auth_method: AuthMethod = AuthMethod.TOKEN
     ksef_cert_path: str = ""
     purchase_register: str = "ZAKUP"
+    # identyfikator bazy w Optimie (Konfiguracja -> Firma -> Ogolne -> Praca rozproszona)
+    # -> BAZA_DOC_ID w pliku importu rejestru zakupow
+    offline_target_id: str = ""
     lp_numbering: LpNumbering = LpNumbering.MONTH
     writes_enabled: bool = False
 

@@ -27,7 +27,7 @@
         {% for row in rows %}
         <tr>
             <td>
-                {% if row['status'] in ('new', 'needs_contractor') %}
+                {% if row['status'] in ('new', 'needs_contractor', 'xml_exported', 'error') %}
                 <input type="checkbox" name="ids" value="{{ row['id'] }}">
                 {% endif %}
             </td>
