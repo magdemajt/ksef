@@ -22,8 +22,8 @@
         {% for line in parsed.vat_lines %}
         <tr>
             <td>{{ line.stawka_symbol }}</td>
-            <td class="num">{{ line.netto }}</td>
-            <td class="num">{{ line.vat }}</td>
+            <td class="num">{{ '%.2f' | format(line.netto) }}</td>
+            <td class="num">{{ '%.2f' | format(line.vat) }}</td>
         </tr>
         {% endfor %}
     </table>

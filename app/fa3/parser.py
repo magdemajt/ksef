@@ -156,6 +156,11 @@ def parse_invoice(xml: bytes, ksef_number: str | None = None) -> PurchaseInvoice
                 line.vat += (netto * rate / 100).quantize(Decimal("0.01"))
         vat_lines = list(agg.values())
 
+    # Programy wystawcow czesto wypisuja wszystkie koszyki P_13_x z zerami (i wiersze
+    # o wartosci 0) - do rejestru VAT trafiaja tylko stawki z kwota.
+    nonzero = [v for v in vat_lines if v.netto or v.vat]
+    vat_lines = nonzero or vat_lines[:1]
+
     total_net = sum((v.netto for v in vat_lines), Decimal(0))
     total_vat = sum((v.vat for v in vat_lines), Decimal(0))
 

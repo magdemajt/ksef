@@ -70,6 +70,31 @@ class TestRoundTrip:
         assert symbols["8"].vat == D("4.00")
         assert parsed.payment_due == "2026-08-20"
 
+    def test_zero_vat_buckets_are_dropped(self):
+        """Wystawca wypisuje wszystkie koszyki P_13_x z zerami - zostaje tylko ten z kwota."""
+        ns = "http://crd.gov.pl/wzor/2025/06/25/13775/"
+        root = etree.fromstring(_built_invoice_xml())
+        fa = root.find(f"{{{ns}}}Fa")
+        for tag in [f"P_13_{i}" for i in (1, 2, 3, 4, 5)] + ["P_14_1", "P_14_2", "P_14_3"]:
+            for el in fa.findall(f"{{{ns}}}{tag}"):
+                fa.remove(el)
+        anchor = fa.find(f"{{{ns}}}P_15")
+        for tag, value in (
+            ("P_13_1", "0.00"), ("P_14_1", "0.00"), ("P_13_2", "0.00"), ("P_14_2", "0.00"),
+            ("P_13_6_1", "0.00"), ("P_13_7", "785.00"), ("P_13_8", "0.00"),
+        ):
+            el = etree.Element(f"{{{ns}}}{tag}")
+            el.text = value
+            anchor.addprevious(el)
+        parsed = parse_invoice(etree.tostring(root), "5272974960-20261016-376AFDC00000-11")
+        assert [(v.stawka_symbol, v.netto) for v in parsed.vat_lines] == [("zw", D("785.00"))]
+        assert parsed.total_net == D("785.00")
+        rec = etree.fromstring(export_as_xml([parsed], "ZAKUP", "KSIEG"))[0][3]
+        assert [
+            (p.findtext("{*}STAWKA_VAT"), p.findtext("{*}STATUS_VAT"), p.findtext("{*}NETTO"))
+            for p in rec.find("{*}POZYCJE")
+        ] == [("0", "zwolniona", "785")]
+
     def test_praca_rozproszona_export(self):
         parsed = parse_invoice(_built_invoice_xml(), "5265877635-20260803-1D0168800247-33")
         known = Contractor(
