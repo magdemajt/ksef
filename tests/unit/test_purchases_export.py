@@ -88,3 +88,17 @@ def test_xml_export_skips_invoice_already_in_optima(setup, monkeypatch):
     )
     assert "Nic do eksportu" in rendered["msg"]
     assert downloads.get(row_id)["status"] == "already_in_optima"
+
+
+def test_xml_export_requires_target_base_id(setup, monkeypatch):
+    downloads, row_id, make_context = setup
+    context = make_context(0)
+    context.company("firma_a").offline_target_id = ""
+    rendered = {}
+    monkeypatch.setattr(
+        "app.web.routes.purchases._render_list",
+        lambda request, context, c, sync_result=None: rendered.setdefault("msg", sync_result),
+    )
+    purchases_export(request=None, c="firma_a", csrf="x", mode="xml", ids=[row_id], context=context)
+    assert "identyfikator bazy" in rendered["msg"]
+    assert downloads.get(row_id)["exported_at"] is None

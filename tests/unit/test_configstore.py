@@ -98,6 +98,12 @@ class TestUpdateCompany:
         assert doc["companies"]["firma_a"]["purchase_register"] == "ZAKUPY_KRAJ"
         assert doc["companies"]["firma_a"]["name"] == "Firma A"
 
+    def test_saves_offline_target_id(self, cfg_file):
+        from app.config import load_config
+
+        configstore.update_company("firma_a", {"offline_target_id": "KSIEG"}, path=cfg_file)
+        assert load_config(cfg_file).companies["firma_a"].offline_target_id == "KSIEG"
+
     def test_rejects_unknown_company(self, cfg_file):
         with pytest.raises(configstore.ConfigStoreError, match="Nieznana"):
             configstore.update_company("firma_x", {"name": "X"}, path=cfg_file)

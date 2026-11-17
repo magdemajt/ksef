@@ -1,3 +1,4 @@
+import re
 from datetime import date
 from decimal import Decimal as D
 
@@ -133,6 +134,26 @@ class TestRoundTrip:
             "NETTO_SYS2", "VAT_SYS2", "RODZAJ_ZAKUPU", "ODLICZENIA_VAT", "KOLUMNA_KPR",
             "KOLUMNA_RYCZALT",
         ]
+
+    def test_praca_rozproszona_serialization_matches_optima_export(self):
+        """Optima rozroznia pusty CDATA od pustego elementu - import walut tego wymaga."""
+        parsed = parse_invoice(_built_invoice_xml(), "5265877635-20260803-1D0168800247-33")
+        text = export_as_xml([parsed], "ZAKUP", "KSIEG").decode()
+        assert text.startswith('<?xml version="1.0" encoding="UTF-8"?>\r\n<ROOT xmlns=')
+        for fragment in (
+            "<BAZA_DOC_ID>KSIEG</BAZA_DOC_ID>",
+            "<WALUTA><![CDATA[]]></WALUTA>",
+            "<WALUTA_PLAT><![CDATA[]]></WALUTA_PLAT>",
+            "<WALUTA_DOK><![CDATA[]]></WALUTA_DOK>",
+            "<NUMER><![CDATA[FA/RT/1]]></NUMER>",
+            "<KOREKTA>Nie</KOREKTA>",
+            "<NETTO>100</NETTO>",
+            "<KWOTY_DODATKOWE/>",
+            "<DOKUMENTY_OBD/><KODY_JPK/><ATRYBUTY/></REJESTR_ZAKUPU_VAT>",
+        ):
+            assert fragment in text, fragment
+        body = text.split("\r\n", 1)[1]
+        assert not re.search(r">\s+<", body)  # bez wciec miedzy elementami
 
     def test_praca_rozproszona_unknown_contractor_and_stable_ids(self):
         parsed = parse_invoice(_built_invoice_xml(), "5265877635-20260803-1D0168800247-33")

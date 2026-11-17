@@ -90,10 +90,37 @@ def _name_parts(name: str) -> list[str]:
     return parts + [""] * (3 - len(parts))
 
 
+# Pola tekstowe Optima zapisuje jako CDATA (takze puste: <WALUTA><![CDATA[]]></WALUTA>),
+# a wyliczenia i liczby zwyklym tekstem. Import rozroznia pusty CDATA od braku wezla
+# tekstowego (pusta WALUTA bez CDATA -> "Waluta dokumentu nie zgadza sie z waluta platnosci"),
+# dlatego zapis odwzorowuje eksport Optimy co do znaku.
+_PLAIN_TAGS = frozenset({
+    "WERSJA", "BAZA_ZRD_ID", "BAZA_DOC_ID",
+    "MODUL", "TYP", "KOREKTA", "WEWNETRZNA", "METODA_KASOWA", "FISKALNA", "DETALICZNA",
+    "EKSPORT", "FINALNY", "PODATNIK_CZYNNY", "ROLNIK", "NOTOWANIE_WALUTY_ILE",
+    "NOTOWANIE_WALUTY_ZA_ILE", "KURS_DO_KSIEGOWANIA", "NOTOWANIE_WALUTY_ILE_2",
+    "NOTOWANIE_WALUTY_ZA_ILE_2", "PLATNOSC_VAT_W_PLN", "AKCYZA_NA_WEGIEL",
+    "AKCYZA_NA_WEGIEL_KOLUMNA_KPR", "JPK_FA", "MPP",
+    "LP", "STAWKA_VAT", "STATUS_VAT", "NETTO", "VAT", "NETTO_SYS", "VAT_SYS", "NETTO_SYS2",
+    "VAT_SYS2", "RODZAJ_ZAKUPU", "ODLICZENIA_VAT",
+    "KWOTA_PLAT", "NOTOWANIE_WALUTY_ILE_PLAT", "NOTOWANIE_WALUTY_ZA_ILE_PLAT",
+    "KWOTA_PLN_PLAT", "KIERUNEK", "PODLEGA_ROZLICZENIU", "NIE_NALICZAJ_ODSETEK",
+    "PRZELEW_SEPA", "PLAT_FA_Z_PA", "PLAT_VAN_FA_Z_PA", "PLAT_SPLIT_PAYMENT",
+    "PLAT_SPLIT_KWOTA_VAT",
+})
+
+
 def _t(parent, tag, text=""):
+    """Element z wartoscia: CDATA dla pol tekstowych, zwykly tekst dla pozostalych."""
     el = etree.SubElement(parent, f"{{{OFFLINE_NS}}}{tag}")
-    el.text = str(text)
+    text = str(text)
+    el.text = text if tag in _PLAIN_TAGS or "]]>" in text else etree.CDATA(text)
     return el
+
+
+def _c(parent, tag):
+    """Element-kontener; pusty zapisuje sie jako <TAG/> (tak jak w eksporcie Optimy)."""
+    return etree.SubElement(parent, f"{{{OFFLINE_NS}}}{tag}")
 
 
 def export_as_xml(
@@ -113,14 +140,15 @@ def export_as_xml(
     contractors = contractors or {}
     payment_form_ids = payment_form_ids or {}
     root = etree.Element(f"{{{OFFLINE_NS}}}ROOT", nsmap={None: OFFLINE_NS})
-    section = _t(root, "REJESTRY_ZAKUPU_VAT")
-    section.text = None
+    section = _c(root, "REJESTRY_ZAKUPU_VAT")
     _t(section, "WERSJA", "2.00")
     _t(section, "BAZA_ZRD_ID", OFFLINE_SOURCE_ID)
     _t(section, "BAZA_DOC_ID", target_db_id)
     for inv in invoices:
         _offline_record(section, inv, register, contractors, payment_form_ids)
-    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+    # bez wciec i znakow konca linii miedzy elementami - jak w eksporcie Optimy
+    body = etree.tostring(root, xml_declaration=False, encoding="UTF-8")
+    return b'<?xml version="1.0" encoding="UTF-8"?>\r\n' + body
 
 
 def _offline_record(section, inv, register, contractors, payment_form_ids) -> None:
@@ -140,7 +168,7 @@ def _offline_record(section, inv, register, contractors, payment_form_ids) -> No
     deduction = max(sale, received)  # prawo do odliczenia: nie wczesniej niz wplyw faktury
     due = inv.payment_due or issue
     forma = "gotówka" if inv.payment_form == "1" else "przelew"
-    forma_id = payment_form_ids.get(forma, "")
+    forma_id = payment_form_ids.get(forma) or _guid("forma", forma)
     account = "".join(ch for ch in (inv.bank_account or "") if ch.isdigit())
     account = account if len(account) == 26 else ""
     names = _name_parts(inv.seller_name)
@@ -149,8 +177,7 @@ def _offline_record(section, inv, register, contractors, payment_form_ids) -> No
     if match:
         postcode, city = match.groups()
 
-    rec = _t(section, "REJESTR_ZAKUPU_VAT")
-    rec.text = None
+    rec = _c(section, "REJESTR_ZAKUPU_VAT")
     _t(rec, "ID_ZRODLA", _guid("rejestr", key))
     _t(rec, "MODUL", "Rejestr Vat")
     _t(rec, "TYP", "Rejestr zakupu")
@@ -226,11 +253,9 @@ def _offline_record(section, inv, register, contractors, payment_form_ids) -> No
         _t(rec, "KSEF_DATA_PRZYJECIA", received)
     _t(rec, "DODATKOWY_OPIS")
 
-    pozycje = _t(rec, "POZYCJE")
-    pozycje.text = None
+    pozycje = _c(rec, "POZYCJE")
     for lp, line in enumerate(inv.vat_lines, start=1):
-        poz = _t(pozycje, "POZYCJA")
-        poz.text = None
+        poz = _c(pozycje, "POZYCJA")
         _t(poz, "LP", lp)
         if line.stawka is not None:
             _t(poz, "STAWKA_VAT", _num(line.stawka))
@@ -249,15 +274,13 @@ def _offline_record(section, inv, register, contractors, payment_form_ids) -> No
         _t(poz, "ODLICZENIA_VAT", "tak")
         _t(poz, "KOLUMNA_KPR", "Towary")
         _t(poz, "KOLUMNA_RYCZALT", "3.00")
-    _t(rec, "KWOTY_DODATKOWE")
+    _c(rec, "KWOTY_DODATKOWE")
 
-    platnosci = _t(rec, "PLATNOSCI")
+    platnosci = _c(rec, "PLATNOSCI")
     if inv.total_gross:
-        platnosci.text = None
         amount = _num(abs(inv.total_gross))
         reference = inv.ksef_number or inv.invoice_number
-        plat = _t(platnosci, "PLATNOSC")
-        plat.text = None
+        plat = _c(platnosci, "PLATNOSC")
         _t(plat, "ID_ZRODLA_PLAT", _guid("platnosc", key))
         _t(plat, "TERMIN_PLAT", due)
         _t(plat, "FORMA_PLATNOSCI_PLAT", forma)
@@ -292,9 +315,9 @@ def _offline_record(section, inv, register, contractors, payment_form_ids) -> No
         _t(plat, "PLAT_SPLIT_KWOTA_VAT", _num(abs(inv.total_vat)))
         _t(plat, "PLAT_SPLIT_NIP", nip)
         _t(plat, "PLAT_SPLIT_NR_DOKUMENTU", reference)
-    _t(rec, "DOKUMENTY_OBD")
-    _t(rec, "KODY_JPK")
-    _t(rec, "ATRYBUTY")
+    _c(rec, "DOKUMENTY_OBD")
+    _c(rec, "KODY_JPK")
+    _c(rec, "ATRYBUTY")
 
 
 # -- sciezka 2: bezposredni INSERT --

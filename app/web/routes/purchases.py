@@ -110,6 +110,14 @@ def purchases_export(
         invoices.append((row, parsed))
 
     if mode == "xml":
+        if not company.offline_target_id:
+            # Optima odrzuca plik z pustym BAZA_DOC_ID ("Niezgodnosc identyfikatora bazy docelowej")
+            return _render_list(
+                request, context, c,
+                sync_result="Eksport XML przerwany - ustaw identyfikator bazy w pracy rozproszonej "
+                "(Ustawienia -> Firmy -> edycja firmy), taki sam jak w Optimie: Konfiguracja -> "
+                "Firma -> Ogolne -> Praca rozproszona",
+            )
         # Bez bazy Optimy nie da sie sprawdzic duplikatow ani dopasowac kontrahentow -
         # natywny modul KSeF Optimy mogl juz pobrac te same faktury.
         try:
