@@ -27,7 +27,7 @@
         {% for row in rows %}
         <tr>
             <td>
-                {% if row['status'] in ('new', 'needs_contractor', 'xml_exported', 'error') %}
+                {% if row['status'] in ('new', 'needs_contractor', 'error') %}
                 <input type="checkbox" name="ids" value="{{ row['id'] }}">
                 {% endif %}
             </td>
@@ -41,7 +41,11 @@
             <td class="num">{{ '%.2f' | format(row['gross'] or 0) }}</td>
             <td>{{ row['currency'] or 'PLN' }}</td>
             <td>
+                {% if row['status'] == 'new' and row['exported_at'] %}
+                <span class="badge b-xml_exported" title="{{ row['exported_at'][:16] }}">w pliku XML</span>
+                {% else %}
                 <span class="badge b-{{ row['status'] }}">{{ status_labels[row['status']] }}</span>
+                {% endif %}
                 {% if row['error_detail'] %}<div class="error-text">{{ row['error_detail'] }}</div>{% endif %}
             </td>
         </tr>

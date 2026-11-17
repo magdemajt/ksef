@@ -83,3 +83,16 @@ class TestDownloadRepo:
         assert repo.insert_if_new("f1", "test", "KSEF-1", invoice_number="FA/1") is True
         assert repo.insert_if_new("f1", "test", "KSEF-1", invoice_number="FA/1") is False
         assert len(repo.list_for("f1", "test")) == 1
+
+    def test_every_gui_status_is_accepted_by_schema(self, conn):
+        """Status spoza CHECK w schema.sql wywala eksport bledem 500 (regresja 0.1.15)."""
+        from app.web.routes.purchases import STATUS_LABELS
+
+        repo = DownloadRepo(conn)
+        repo.insert_if_new("firma_a", "test", "KSEF-STATUS-1")
+        row_id = repo.list_for("firma_a", "test")[0]["id"]
+        for status in STATUS_LABELS:
+            repo.set_status(row_id, status)
+        repo.set_status(row_id, "new", exported_at="2026-11-17T20:00:00+00:00", error_detail=None)
+        row = repo.get(row_id)
+        assert row["status"] == "new" and row["exported_at"]

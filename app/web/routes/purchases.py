@@ -31,7 +31,6 @@ STATUS_LABELS = {
     "needs_contractor": "brak kontrahenta",
     "already_in_optima": "juz w Optimie",
     "exported": "wyeksportowana",
-    "xml_exported": "w pliku XML",
     "skipped": "pominieta",
     "error": "blad",
 }
@@ -151,9 +150,11 @@ def purchases_export(
             [p for _, p in to_export], company.purchase_register, company.offline_target_id,
             contractors=contractors, payment_form_ids=payment_form_guids(read_conn),
         )
+        # Status zostaje "new" (import w Optimie jest reczny i moze sie nie udac);
+        # exported_at oznacza tylko, ze faktura trafila do pliku - lista pokazuje "w pliku XML".
         for row, _ in to_export:
             context.downloads.set_status(
-                row["id"], "xml_exported", exported_at=datetime.now(UTC).isoformat()
+                row["id"], "new", exported_at=datetime.now(UTC).isoformat(), error_detail=None
             )
         context.audit.log(
             "purchases_export_xml", c, environment=env,
