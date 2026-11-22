@@ -8,6 +8,11 @@
         <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
         <button type="submit" {% if budget < 3 %}disabled{% endif %}>Synchronizuj z KSeF</button>
     </form>
+    <form method="post" action="/purchases/check" class="inline">
+        <input type="hidden" name="c" value="{{ company_id }}">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <button type="submit" title="Sprawdza, ktore faktury sa juz w rejestrze VAT Optimy (np. po imporcie pliku XML)">Sprawdz w Optimie</button>
+    </form>
     <span class="muted">
         Budzet zapytan (20/h): pozostalo {{ budget }}{% if resets_at %} · odnowienie ~{{ resets_at }}{% endif %}
         {% if last_sync %} · ostatnia synchronizacja: {{ last_sync }}{% endif %}

@@ -31,6 +31,35 @@
     {% if parsed.bank_account %}<p><strong>Rachunek:</strong> {{ parsed.bank_account }}</p>{% endif %}
 </div>
 {% endif %}
+{% if parsed and parsed.lines %}
+<div class="card">
+    <h3>Pozycje{% if parsed.lines[0].from_order %} zamowienia{% endif %} ({{ parsed.lines | length }})</h3>
+    <table>
+        <tr><th>Lp.</th><th>Nazwa</th><th class="num">Ilosc</th><th>J.m.</th>
+            <th class="num">Cena</th><th class="num">Rabat</th>
+            <th class="num">Wartosc</th><th>Stawka</th></tr>
+        {% for line in parsed.lines %}
+        <tr>
+            <td>{{ line.lp }}</td>
+            <td>{{ line.nazwa }}{% if line.before_correction %} <span class="muted">(przed korekta)</span>{% endif %}</td>
+            <td class="num">{{ line.ilosc | qty if line.ilosc is not none else '' }}</td>
+            <td>{{ line.jednostka }}</td>
+            <td class="num">
+                {%- if line.cena_netto is not none %}{{ line.cena_netto | price }}
+                {%- elif line.cena_brutto is not none %}{{ line.cena_brutto | price }} <span class="muted">brutto</span>
+                {%- endif %}</td>
+            <td class="num">{{ line.rabat | price if line.rabat else '' }}</td>
+            <td class="num">
+                {%- if line.wartosc_netto is not none %}{{ '%.2f' | format(line.wartosc_netto) }}
+                {%- elif line.wartosc_brutto is not none %}{{ '%.2f' | format(line.wartosc_brutto) }} <span class="muted">brutto</span>
+                {%- endif %}</td>
+            <td>{{ line.stawka }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    <p class="muted">Ceny i wartosci netto w walucie faktury, o ile nie zaznaczono inaczej.</p>
+</div>
+{% endif %}
 {% if row['xml_path'] %}
 <p><a class="btn" href="/purchases/{{ row['id'] }}/xml?c={{ company_id }}">Pobierz XML zrodlowy</a></p>
 {% endif %}

@@ -116,3 +116,39 @@ def vat_register_has(conn, seller_nip: str, invoice_number: str) -> bool:
         (invoice_number, wanted),
     )
     return (cur.fetchone() or [0])[0] > 0
+
+
+def find_vat_entry(
+    conn, seller_nip: str, invoice_number: str, ksef_number: str | None = None
+) -> int | None:
+    """VaN_VaNID wpisu rejestru VAT zakupu dla faktury albo None.
+
+    Najpierw po numerze KSeF (Optima zapisuje go w VaN_NrKSeF - kolumny moze nie byc
+    w starszych wersjach), potem po parze (NIP dostawcy, numer faktury).
+    """
+    if ksef_number:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT TOP 1 VaN_VaNID FROM CDN.VatNag WHERE VaN_Typ = 1 AND VaN_NrKSeF = ?",
+                (ksef_number,),
+            )
+            found = cur.fetchone()
+        except Exception:
+            found = None
+        if found:
+            return int(found[0])
+    wanted = normalize_nip(seller_nip)
+    if not wanted or not invoice_number:
+        return None
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT TOP 1 VaN_VaNID FROM CDN.VatNag
+        WHERE VaN_Typ = 1 AND VaN_Dokument = ?
+          AND REPLACE(REPLACE(REPLACE(ISNULL(VaN_KntNipE,''),'-',''),' ',''),'PL','') = ?
+        """,
+        (invoice_number, wanted),
+    )
+    found = cur.fetchone()
+    return int(found[0]) if found else None

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import logging
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from app.fa3.parser import parse_invoice
 from app.ksef.ratelimit import RateLimitExceeded
 from app.optima.contractors import (
     find_by_nip,
+    find_vat_entry,
     ksef_number_known,
     normalize_nip,
     payment_form_guids,
@@ -25,15 +28,58 @@ from app.optima.writer import (
 from app.web.deps import AppContext, ctx
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 STATUS_LABELS = {
     "new": "nowa",
     "needs_contractor": "brak kontrahenta",
     "already_in_optima": "juz w Optimie",
-    "exported": "wyeksportowana",
+    "exported": "w rejestrze VAT",
     "skipped": "pominieta",
     "error": "blad",
 }
+
+# statusy, przy ktorych faktura czeka jeszcze na trafienie do Optimy
+OPEN_STATUSES = ("new", "needs_contractor", "error")
+
+
+def _check_in_optima(context: AppContext, company_id: str, *, only_exported: bool) -> dict:
+    """Uzgadnia statusy z baza Optimy - import pliku XML odbywa sie poza aplikacja.
+
+    Faktura wyslana wczesniej do pliku XML i znaleziona w rejestrze VAT -> "exported"
+    (z VaN_VaNID); pozostale znalezione w Optimie -> "already_in_optima".
+    only_exported ogranicza sprawdzanie do faktur czekajacych na import pliku.
+    """
+    env = context.cfg.ksef.environment
+    rows = [
+        row for row in context.downloads.list_for(company_id, env)
+        if row["status"] in OPEN_STATUSES and (row["exported_at"] or not only_exported)
+    ]
+    result = {"checked": len(rows), "in_register": 0, "already": 0}
+    if not rows:
+        return result
+    conn = context.optima.read_connection(context.company(company_id))
+    try:
+        for row in rows:
+            van_id = find_vat_entry(
+                conn, row["seller_nip"] or "", row["invoice_number"] or "", row["ksef_number"]
+            )
+            if van_id is not None and row["exported_at"]:
+                context.downloads.set_status(
+                    row["id"], "exported", van_id=van_id, error_detail=None
+                )
+                result["in_register"] += 1
+            elif van_id is not None or ksef_number_known(conn, row["ksef_number"]):
+                context.downloads.set_status(row["id"], "already_in_optima", error_detail=None)
+                result["already"] += 1
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+    if result["in_register"] or result["already"]:
+        context.audit.log(
+            "purchases_checked_in_optima", company_id, environment=env, details=result
+        )
+    return result
 
 
 def _render_list(request: Request, context: AppContext, company_id: str, sync_result=None):
@@ -59,7 +105,34 @@ def _render_list(request: Request, context: AppContext, company_id: str, sync_re
 @router.get("/purchases")
 def purchases_list(request: Request, c: str | None = None, context: AppContext = Depends(ctx)):
     company_id = c or context.default_company_id()
-    return _render_list(request, context, company_id)
+    message = None
+    try:
+        # faktury z pliku XML: sprawdz, czy import w Optimie juz je wprowadzil
+        found = _check_in_optima(context, company_id, only_exported=True)
+        if found["in_register"]:
+            message = f"Optima: {found['in_register']} faktur z pliku XML jest juz w rejestrze VAT"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Nie udalo sie sprawdzic statusow w Optimie: %s", exc)
+    return _render_list(request, context, company_id, sync_result=message)
+
+
+@router.post("/purchases/check")
+def purchases_check(
+    request: Request,
+    c: str = Form(...),
+    csrf: str = Form(...),
+    context: AppContext = Depends(ctx),
+):
+    context.check_csrf(csrf)
+    try:
+        found = _check_in_optima(context, c, only_exported=False)
+        result = (
+            f"Sprawdzono {found['checked']}: w rejestrze VAT po imporcie pliku "
+            f"{found['in_register']}, juz w Optimie {found['already']}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        result = f"Nie udalo sie sprawdzic w Optimie: {exc}"
+    return _render_list(request, context, c, sync_result=result)
 
 
 @router.post("/purchases/sync")
@@ -225,8 +298,11 @@ def purchase_detail(
     request: Request, invoice_id: int, c: str, context: AppContext = Depends(ctx)
 ):
     row = context.downloads.get(invoice_id)
-    if row is None or row["company_id"] != c:
+    if row is None:
         raise HTTPException(404, "Nie znaleziono faktury")
+    if row["company_id"] != c:
+        # przelaczenie firmy na podgladzie faktury - wracamy do listy wybranej firmy
+        return RedirectResponse(f"/purchases?c={c}", status_code=303)
     parsed = None
     if row["xml_path"] and Path(row["xml_path"]).exists():
         try:

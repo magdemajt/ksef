@@ -70,6 +70,25 @@ class TestRoundTrip:
         assert symbols["8"].vat == D("4.00")
         assert parsed.payment_due == "2026-08-20"
 
+    def test_invoice_positions_are_parsed(self):
+        parsed = parse_invoice(_built_invoice_xml())
+        assert [
+            (ln.lp, ln.nazwa, ln.ilosc, ln.jednostka, ln.cena_netto, ln.wartosc_netto, ln.stawka)
+            for ln in parsed.lines
+        ] == [
+            ("1", "A", D(1), "szt.", D("100.00"), D("100.00"), "23"),
+            ("2", "B", D(1), "szt.", D("50.00"), D("50.00"), "8"),
+        ]
+
+    def test_zero_value_position_stays_in_preview(self):
+        """Wiersz 0.00 znika z rozbicia VAT, ale w podgladzie pozycji zostaje (jest na fakturze)."""
+        ns = "http://crd.gov.pl/wzor/2025/06/25/13775/"
+        root = etree.fromstring(_built_invoice_xml())
+        second = root.findall(f"{{{ns}}}Fa/{{{ns}}}FaWiersz")[1]
+        second.find(f"{{{ns}}}P_11").text = "0.00"
+        parsed = parse_invoice(etree.tostring(root))
+        assert [ln.wartosc_netto for ln in parsed.lines] == [D("100.00"), D("0.00")]
+
     def test_zero_vat_buckets_are_dropped(self):
         """Wystawca wypisuje wszystkie koszyki P_13_x z zerami - zostaje tylko ten z kwota."""
         ns = "http://crd.gov.pl/wzor/2025/06/25/13775/"

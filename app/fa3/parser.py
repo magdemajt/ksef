@@ -54,6 +54,24 @@ class VatLine:
 
 
 @dataclass
+class InvoiceLine:
+    """Pozycja faktury (FaWiersz, a dla zaliczkowych ZamowienieWiersz) - tylko do podgladu."""
+
+    lp: str
+    nazwa: str
+    jednostka: str = ""
+    ilosc: Decimal | None = None
+    cena_netto: Decimal | None = None  # P_9A
+    cena_brutto: Decimal | None = None  # P_9B (faktury liczone od brutto)
+    rabat: Decimal | None = None  # P_10
+    wartosc_netto: Decimal | None = None  # P_11
+    wartosc_brutto: Decimal | None = None  # P_11A
+    stawka: str = ""  # P_12
+    before_correction: bool = False  # StanPrzed = 1 (wiersz korekty "przed")
+    from_order: bool = False  # wiersz zamowienia z faktury zaliczkowej
+
+
+@dataclass
 class PurchaseInvoice:
     ksef_number: str | None
     invoice_number: str
@@ -77,6 +95,7 @@ class PurchaseInvoice:
     cash_method: bool = False  # Adnotacje/P_16 = 1
     split_payment: bool = False  # Adnotacje/P_18A = 1
     corrected_number: str | None = None  # DaneFaKorygowanej/NrFaKorygowanej
+    lines: list[InvoiceLine] = field(default_factory=list)
 
 
 def _find_ns(root: etree._Element) -> str:
@@ -156,6 +175,39 @@ def parse_invoice(xml: bytes, ksef_number: str | None = None) -> PurchaseInvoice
                 line.vat += (netto * rate / 100).quantize(Decimal("0.01"))
         vat_lines = list(agg.values())
 
+    lines = [
+        InvoiceLine(
+            lp=_text(w.find(q("NrWierszaFa"))) or str(i),
+            nazwa=_text(w.find(q("P_7"))),
+            jednostka=_text(w.find(q("P_8A"))),
+            ilosc=_dec(w.find(q("P_8B"))),
+            cena_netto=_dec(w.find(q("P_9A"))),
+            cena_brutto=_dec(w.find(q("P_9B"))),
+            rabat=_dec(w.find(q("P_10"))),
+            wartosc_netto=_dec(w.find(q("P_11"))),
+            wartosc_brutto=_dec(w.find(q("P_11A"))),
+            stawka=_text(w.find(q("P_12"))),
+            before_correction=_text(w.find(q("StanPrzed"))) == "1",
+        )
+        for i, w in enumerate(fa.findall(q("FaWiersz")), start=1)
+    ]
+    if not lines:
+        # faktura zaliczkowa: pozycje sa w zamowieniu
+        lines = [
+            InvoiceLine(
+                lp=_text(w.find(q("NrWierszaZam"))) or str(i),
+                nazwa=_text(w.find(q("P_7Z"))),
+                jednostka=_text(w.find(q("P_8AZ"))),
+                ilosc=_dec(w.find(q("P_8BZ"))),
+                cena_netto=_dec(w.find(q("P_9AZ"))),
+                wartosc_netto=_dec(w.find(q("P_11NettoZ"))),
+                stawka=_text(w.find(q("P_12Z"))),
+                before_correction=_text(w.find(q("StanPrzedZ"))) == "1",
+                from_order=True,
+            )
+            for i, w in enumerate(fa.findall(q("Zamowienie/ZamowienieWiersz")), start=1)
+        ]
+
     # Programy wystawcow czesto wypisuja wszystkie koszyki P_13_x z zerami (i wiersze
     # o wartosci 0) - do rejestru VAT trafiaja tylko stawki z kwota.
     nonzero = [v for v in vat_lines if v.netto or v.vat]
@@ -196,4 +248,5 @@ def parse_invoice(xml: bytes, ksef_number: str | None = None) -> PurchaseInvoice
         cash_method=_text(fa.find(q("Adnotacje/P_16"))) == "1",
         split_payment=_text(fa.find(q("Adnotacje/P_18A"))) == "1",
         corrected_number=_text(fa.find(q("DaneFaKorygowanej/NrFaKorygowanej"))) or None,
+        lines=lines,
     )
