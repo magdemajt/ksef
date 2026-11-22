@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -38,22 +39,37 @@ UNIT_CANDIDATES = ("TrE_Jm", "TrE_JmZ")
 LINE_SPLIT_PAY_CANDIDATES = ("TrE_SplitPay",)
 
 
+# Lista kolumn tabeli zmienia sie tylko przy aktualizacji Optimy - nie pytamy o nia bazy
+# przy kazdym wejsciu na strone. {(baza, tabela): (czas odczytu, kolumny)}
+_COLUMN_CACHE: dict[tuple[str, str], tuple[float, set[str]]] = {}
+_COLUMN_CACHE_SECONDS = 600
+
+
 class SalesReader:
-    def __init__(self, conn):
+    def __init__(self, conn, cache_key: str | None = None):
+        """cache_key identyfikuje baze (serwer + nazwa); bez niego kolumny czytane sa zawsze."""
         self.conn = conn
+        self.cache_key = cache_key
         self._tranag_cols: set[str] | None = None
         self._traelem_cols: set[str] | None = None
 
     # -- introspekcja --
 
     def _columns(self, table: str) -> set[str]:
+        if self.cache_key is not None:
+            cached = _COLUMN_CACHE.get((self.cache_key, table))
+            if cached and time.monotonic() - cached[0] < _COLUMN_CACHE_SECONDS:
+                return cached[1]
         cur = self.conn.cursor()
         cur.execute(
             "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
             "WHERE TABLE_SCHEMA='CDN' AND TABLE_NAME=?",
             (table,),
         )
-        return {row[0] for row in cur.fetchall()}
+        columns = {row[0] for row in cur.fetchall()}
+        if self.cache_key is not None and columns:
+            _COLUMN_CACHE[(self.cache_key, table)] = (time.monotonic(), columns)
+        return columns
 
     def tranag_columns(self) -> set[str]:
         if self._tranag_cols is None:

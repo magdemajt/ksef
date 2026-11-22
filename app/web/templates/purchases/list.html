@@ -3,12 +3,12 @@
 {% block content %}
 <h1>Faktury zakupu z KSeF</h1>
 <div class="card">
-    <form method="post" action="/purchases/sync" class="inline">
+    <form method="post" action="/purchases/sync{{ filter_qs }}" class="inline">
         <input type="hidden" name="c" value="{{ company_id }}">
         <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
         <button type="submit" {% if budget < 3 %}disabled{% endif %}>Synchronizuj z KSeF</button>
     </form>
-    <form method="post" action="/purchases/check" class="inline">
+    <form method="post" action="/purchases/check{{ filter_qs }}" class="inline">
         <input type="hidden" name="c" value="{{ company_id }}">
         <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
         <button type="submit" title="Sprawdza, ktore faktury sa juz w rejestrze VAT Optimy (np. po imporcie pliku XML)">Sprawdz w Optimie</button>
@@ -18,21 +18,43 @@
         {% if last_sync %} · ostatnia synchronizacja: {{ last_sync }}{% endif %}
     </span>
     {% if sync_result %}<p><strong>{{ sync_result }}</strong></p>{% endif %}
+    {% if pending_xml %}
+    <p class="muted">Czeka na pobranie XML: {{ pending_xml }}. KSeF pozwala pobrac 16 faktur na minute
+       i 64 na godzine - pozostale pobiora sie same w tle, wystarczy zostawic program wlaczony.</p>
+    {% endif %}
 </div>
 
-<form method="post" action="/purchases/export">
+<form method="get" action="/purchases" class="card">
+    <input type="hidden" name="c" value="{{ company_id }}">
+    <select name="date_field">
+        <option value="issue" {% if filter.date_field == 'issue' %}selected{% endif %}>Data wystawienia</option>
+        <option value="storage" {% if filter.date_field == 'storage' %}selected{% endif %}>Data przyjecia w KSeF</option>
+    </select>
+    od: <input type="date" name="date_from" value="{{ filter.date_from }}">
+    do: <input type="date" name="date_to" value="{{ filter.date_to }}">
+    <button type="submit">Filtruj</button>
+    <input type="hidden" name="sort" value="{{ filter.sort }}">
+    <input type="hidden" name="dir" value="{{ filter.dir }}">
+    {% if dates_active %}
+    <a href="{{ clear_url }}">Wyczysc</a>
+    <span class="muted">· pokazano {{ rows | length }} z {{ total_rows }}</span>
+    {% endif %}
+</form>
+
+<form method="post" action="/purchases/export{{ filter_qs }}">
     <input type="hidden" name="c" value="{{ company_id }}">
     <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
     <table>
         <tr>
             <th></th><th>Numer KSeF</th><th>Numer faktury</th><th>Sprzedawca</th><th>NIP</th>
-            <th>Data wyst.</th><th class="num">Netto</th><th class="num">VAT</th>
+            <th><a href="{{ sort_headers.issue.url }}" title="Sortuj po dacie wystawienia">Data wyst. {{ sort_headers.issue.arrow }}</a></th>
+            <th><a href="{{ sort_headers.storage.url }}" title="Sortuj po dacie przyjecia w KSeF">W KSeF {{ sort_headers.storage.arrow }}</a></th><th class="num">Netto</th><th class="num">VAT</th>
             <th class="num">Brutto</th><th>Waluta</th><th>Status</th>
         </tr>
         {% for row in rows %}
         <tr>
             <td>
-                {% if row['status'] in ('new', 'needs_contractor', 'error') %}
+                {% if row['status'] in ('new', 'needs_contractor', 'error') and row['xml_path'] %}
                 <input type="checkbox" name="ids" value="{{ row['id'] }}">
                 {% endif %}
             </td>
@@ -41,12 +63,15 @@
             <td>{{ row['seller_name'] }}</td>
             <td>{{ row['seller_nip'] }}</td>
             <td>{{ row['issue_date'] }}</td>
+            <td>{{ (row['storage_date'] or '')[:10] }}</td>
             <td class="num">{{ '%.2f' | format(row['net'] or 0) }}</td>
             <td class="num">{{ '%.2f' | format(row['vat'] or 0) }}</td>
             <td class="num">{{ '%.2f' | format(row['gross'] or 0) }}</td>
             <td>{{ row['currency'] or 'PLN' }}</td>
             <td>
-                {% if row['status'] == 'new' and row['exported_at'] %}
+                {% if row['status'] == 'new' and not row['xml_path'] %}
+                <span class="badge b-pending_xml" title="XML zostanie pobrany z KSeF w tle">czeka na XML</span>
+                {% elif row['status'] == 'new' and row['exported_at'] %}
                 <span class="badge b-xml_exported" title="{{ row['exported_at'][:16] }}">w pliku XML</span>
                 {% else %}
                 <span class="badge b-{{ row['status'] }}">{{ status_labels[row['status']] }}</span>
@@ -55,7 +80,9 @@
             </td>
         </tr>
         {% else %}
-        <tr><td colspan="11" class="muted">Brak pobranych faktur — kliknij "Synchronizuj z KSeF"</td></tr>
+        <tr><td colspan="12" class="muted">
+            {%- if dates_active and total_rows %}Brak faktur w wybranym zakresie dat
+            {%- else %}Brak pobranych faktur — kliknij "Synchronizuj z KSeF"{% endif %}</td></tr>
         {% endfor %}
     </table>
     <p>

@@ -4,6 +4,7 @@ import contextlib
 import logging
 from datetime import UTC, date, datetime
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
@@ -12,8 +13,9 @@ from app.fa3.parser import parse_invoice
 from app.ksef.ratelimit import RateLimitExceeded
 from app.optima.contractors import (
     find_by_nip,
-    find_vat_entry,
+    find_vat_entries,
     ksef_number_known,
+    ksef_numbers_known,
     normalize_nip,
     payment_form_guids,
     vat_register_has,
@@ -60,16 +62,22 @@ def _check_in_optima(context: AppContext, company_id: str, *, only_exported: boo
         return result
     conn = context.optima.read_connection(context.company(company_id))
     try:
+        # cala lista w 3 zapytaniach - nie po kilka na fakture (strona laduje sie przy kazdym wejsciu)
+        in_register = find_vat_entries(conn, [
+            (row["ksef_number"], row["seller_nip"] or "", row["invoice_number"] or "")
+            for row in rows
+        ])
+        known = ksef_numbers_known(
+            conn, [row["ksef_number"] for row in rows if row["ksef_number"] not in in_register]
+        )
         for row in rows:
-            van_id = find_vat_entry(
-                conn, row["seller_nip"] or "", row["invoice_number"] or "", row["ksef_number"]
-            )
+            van_id = in_register.get(row["ksef_number"])
             if van_id is not None and row["exported_at"]:
                 context.downloads.set_status(
                     row["id"], "exported", van_id=van_id, error_detail=None
                 )
                 result["in_register"] += 1
-            elif van_id is not None or ksef_number_known(conn, row["ksef_number"]):
+            elif van_id is not None or row["ksef_number"] in known:
                 context.downloads.set_status(row["id"], "already_in_optima", error_detail=None)
                 result["already"] += 1
     finally:
@@ -82,10 +90,92 @@ def _check_in_optima(context: AppContext, company_id: str, *, only_exported: boo
     return result
 
 
+DATE_FIELDS = {"issue": "issue_date", "storage": "storage_date"}
+DEFAULT_SORT = ("storage", "desc")  # najnowsze w KSeF na gorze
+
+
+def _date_filter(request: Request | None) -> dict:
+    """Filtr dat i sortowanie listy z parametrow adresu (POST przenosi je w adresie akcji)."""
+    params = request.query_params if request is not None else {}
+
+    def iso_day(name: str) -> str:
+        raw = (params.get(name) or "").strip()
+        try:
+            return date.fromisoformat(raw).isoformat()
+        except ValueError:
+            return ""
+
+    field = params.get("date_field") or "issue"
+    sort = params.get("sort") or DEFAULT_SORT[0]
+    direction = params.get("dir") or DEFAULT_SORT[1]
+    return {
+        "date_from": iso_day("date_from"),
+        "date_to": iso_day("date_to"),
+        "date_field": field if field in DATE_FIELDS else "issue",
+        "sort": sort if sort in DATE_FIELDS else DEFAULT_SORT[0],
+        "dir": direction if direction in ("asc", "desc") else DEFAULT_SORT[1],
+    }
+
+
+def _has_dates(flt: dict) -> bool:
+    return bool(flt["date_from"] or flt["date_to"])
+
+
+def _filter_query(flt: dict, prefix: str, *, dates: bool = True) -> str:
+    """Parametry widoku do doklejenia do adresu; pusty napis dla widoku domyslnego."""
+    params = {}
+    if dates and _has_dates(flt):
+        params = {k: flt[k] for k in ("date_from", "date_to", "date_field") if flt[k]}
+    if (flt["sort"], flt["dir"]) != DEFAULT_SORT:
+        params |= {"sort": flt["sort"], "dir": flt["dir"]}
+    return prefix + urlencode(params) if params else ""
+
+
+def _list_url(request: Request | None, company_id: str) -> str:
+    return f"/purchases?c={company_id}" + _filter_query(_date_filter(request), "&")
+
+
+def _in_range(row, flt: dict) -> bool:
+    day = (row[DATE_FIELDS[flt["date_field"]]] or "")[:10]
+    if not day:
+        return True  # bez daty nie da sie ocenic - nie ukrywamy faktury
+    return (not flt["date_from"] or day >= flt["date_from"]) and (
+        not flt["date_to"] or day <= flt["date_to"]
+    )
+
+
+def _sorted(rows: list, flt: dict) -> list:
+    """Sortuje po wybranej dacie; faktury bez tej daty zawsze na koncu."""
+    column = DATE_FIELDS[flt["sort"]]
+    dated = sorted(
+        (row for row in rows if row[column]),
+        key=lambda row: (row[column], row["id"]),
+        reverse=flt["dir"] == "desc",
+    )
+    return dated + [row for row in rows if not row[column]]
+
+
+def _sort_headers(flt: dict, company_id: str) -> dict:
+    """Dla kazdej kolumny daty: adres po kliknieciu naglowka i strzalka biezacego kierunku."""
+    headers = {}
+    for key in DATE_FIELDS:
+        active = flt["sort"] == key
+        # klikniecie aktywnej kolumny odwraca kierunek; nowa kolumna zaczyna od najnowszych
+        direction = "asc" if active and flt["dir"] == "desc" else "desc"
+        target = {**flt, "sort": key, "dir": direction}
+        headers[key] = {
+            "url": f"/purchases?c={company_id}" + _filter_query(target, "&"),
+            "arrow": ("▼" if flt["dir"] == "desc" else "▲") if active else "",
+        }
+    return headers
+
+
 def _render_list(request: Request, context: AppContext, company_id: str, sync_result=None):
     company = context.company(company_id)
     env = context.cfg.ksef.environment
-    rows = context.downloads.list_for(company_id, env)
+    all_rows = context.downloads.list_for(company_id, env)
+    flt = _date_filter(request)
+    rows = _sorted([row for row in all_rows if _in_range(row, flt)], flt)
     budget = context.limiter.remaining(company_id, "invoice_metadata_or_export")
     resets = context.limiter.resets_at(company_id, "invoice_metadata_or_export")
     last_sync = context.sync_state.get(company_id, f"purchase_hwm:{env}")
@@ -98,6 +188,14 @@ def _render_list(request: Request, context: AppContext, company_id: str, sync_re
             "budget": budget,
             "resets_at": resets.astimezone().strftime("%H:%M") if resets else None,
             "last_sync": last_sync, "sync_result": sync_result,
+            "pending_xml": sum(
+                1 for row in all_rows
+                if not row["xml_path"] and row["status"] in ("new", "error")
+            ),
+            "total_rows": len(all_rows), "filter": flt, "dates_active": _has_dates(flt),
+            "filter_qs": _filter_query(flt, "?"),
+            "clear_url": f"/purchases?c={company_id}" + _filter_query(flt, "&", dates=False),
+            "sort_headers": _sort_headers(flt, company_id),
         },
     )
 
@@ -149,6 +247,8 @@ def purchases_sync(
             f"Synchronizacja OK: stron {stats['pages']}, nowych {stats['new']}, "
             f"znanych {stats['known']}"
         )
+        if stats.get("pending"):
+            result += f", czeka na pobranie XML: {stats['pending']}"
     except RateLimitExceeded as exc:
         result = str(exc)
     except Exception as exc:  # noqa: BLE001
@@ -167,7 +267,7 @@ def purchases_export(
 ):
     context.check_csrf(csrf)
     if not ids:
-        return RedirectResponse(f"/purchases?c={c}", status_code=303)
+        return RedirectResponse(_list_url(request, c), status_code=303)
     company = context.company(c)
     env = context.cfg.ksef.environment
 
@@ -288,7 +388,7 @@ def purchases_export(
                 context.downloads.set_status(
                     invoice_id, "error", error_detail=f"Blad INSERT: {exc}"
                 )
-        return RedirectResponse(f"/purchases?c={c}", status_code=303)
+        return RedirectResponse(_list_url(request, c), status_code=303)
 
     raise HTTPException(400, f"Nieznany tryb eksportu: {mode}")
 

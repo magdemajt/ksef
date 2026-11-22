@@ -102,8 +102,9 @@ class AppContext:
         return self._gateways[company_id]
 
     def sales_reader(self, company_id: str) -> SalesReader:
-        conn = self.optima.read_connection(self.company(company_id))
-        return SalesReader(conn)
+        company = self.company(company_id)
+        conn = self.optima.read_connection(company)
+        return SalesReader(conn, cache_key=f"{self.cfg.optima.server}/{company.database}")
 
     def send_service(self, company_id: str) -> SendService:
         return SendService(

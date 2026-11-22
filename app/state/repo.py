@@ -149,6 +149,14 @@ class DownloadRepo:
             "SELECT * FROM downloaded_invoices WHERE id=?", (invoice_id,)
         ).fetchone()
 
+    def pending_xml(self, company_id: str, environment: str):
+        """Faktury znane z metadanych, ktorych XML jeszcze nie pobrano (najstarsze najpierw)."""
+        return self.conn.execute(
+            "SELECT * FROM downloaded_invoices WHERE company_id=? AND environment=? "
+            "AND xml_path IS NULL AND status IN ('new','error') ORDER BY storage_date, id",
+            (company_id, environment),
+        ).fetchall()
+
     def set_status(self, invoice_id: int, status: str, **fields) -> None:
         sets = ", ".join(f"{k}=?" for k in fields)
         q = f"UPDATE downloaded_invoices SET status=?{', ' + sets if sets else ''} WHERE id=?"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from decimal import Decimal
 from importlib import resources
@@ -32,6 +33,22 @@ def _fmt_price(value: Decimal) -> str:
     return f"{value:.{digits}f}"
 
 
+PENDING_POLL_SECONDS = 65
+SLOW_REQUEST_SECONDS = 1.0
+
+
+async def _fetch_pending_xml(context: AppContext) -> None:
+    env = context.cfg.ksef.environment
+    for company_id in list(context.cfg.companies):
+        if not context.downloads.pending_xml(company_id, env):
+            continue
+        try:
+            result = await asyncio.to_thread(context.download_service(company_id).fetch_pending)
+            logger.info("Kolejka XML %s: %s", company_id, result)
+        except Exception:
+            logger.exception("Kolejka XML: pobieranie dla %s nie powiodlo sie", company_id)
+
+
 async def _sync_scheduler(app: FastAPI) -> None:
     """Cyklicznie pobiera nowe faktury zakupu dla kazdej firmy (rozlozone w czasie)."""
     context: AppContext = app.state.ctx
@@ -47,7 +64,13 @@ async def _sync_scheduler(app: FastAPI) -> None:
             except Exception:
                 logger.exception("Scheduler: synchronizacja %s nie powiodla sie", company_id)
             await asyncio.sleep(10)  # odstep miedzy firmami
-        await asyncio.sleep(interval)
+        # Do nastepnej rundy: co ~minute dociagaj XML faktur czekajacych w kolejce
+        # (limit KSeF 16 pobran/min, 64/h - nowa firma ma ich na start duzo wiecej).
+        waited = 0
+        while waited < interval:
+            await asyncio.sleep(PENDING_POLL_SECONDS)
+            waited += PENDING_POLL_SECONDS
+            await _fetch_pending_xml(context)
 
 
 def build_templates() -> Jinja2Templates:
@@ -72,6 +95,18 @@ def create_app(cfg: AppConfig | None = None) -> FastAPI:
             app.state.ctx.conn.close()
 
     app = FastAPI(title="ksef-bridge", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def log_slow_requests(request, call_next):
+        # diagnostyka "aplikacja dziala wolno": w konsoli widac, ktora strona i ile trwala
+        start = time.perf_counter()
+        response = await call_next(request)
+        elapsed = time.perf_counter() - start
+        if elapsed >= SLOW_REQUEST_SECONDS:
+            logger.warning(
+                "Wolne zadanie: %s %s - %.1f s", request.method, request.url.path, elapsed
+            )
+        return response
 
     static_dir = Path(str(resources.files("app.web").joinpath("static")))
     app.state.templates = build_templates()

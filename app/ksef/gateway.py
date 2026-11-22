@@ -22,7 +22,7 @@ from ksef2.domain.models.session import FormSchema
 
 from app.config import AuthMethod, CompanyConfig, KsefEnv
 from app.ksef.models import MetadataPage, PurchaseInvoiceMeta
-from app.ksef.ratelimit import RateLimiter
+from app.ksef.ratelimit import DOWNLOAD_ENDPOINTS, RateLimiter
 from app.secrets import SecretStore
 
 logger = logging.getLogger(__name__)
@@ -213,6 +213,8 @@ class KsefGateway:
         return page
 
     def download_invoice(self, ksef_number: str) -> bytes:
+        """Pobiera XML faktury. Rzuca RateLimitExceeded, gdy budzet 16/min lub 64/h jest zuzyty."""
+        self.limiter.acquire_all(self.company_id, DOWNLOAD_ENDPOINTS)
         # limit 8/s - wymuszamy odstep miedzy wywolaniami
         elapsed = time.monotonic() - self._last_download_ts
         if elapsed < _DOWNLOAD_SPACING_S:

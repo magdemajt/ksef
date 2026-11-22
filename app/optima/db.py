@@ -8,6 +8,7 @@ Dwa loginy (zasada najmniejszych uprawnien):
 from __future__ import annotations
 
 import logging
+import time
 
 from app.config import AppConfig, CompanyConfig
 from app.secrets import SecretStore
@@ -46,7 +47,14 @@ class OptimaDb:
             password,
             self.cfg.optima.trust_server_certificate,
         )
-        return mssql_python.connect(conn_str)
+        start = time.perf_counter()
+        conn = mssql_python.connect(conn_str)
+        elapsed = time.perf_counter() - start
+        if elapsed >= 1.0:
+            logger.warning(
+                "Wolne laczenie z baza Optimy %s: %.1f s", company.database, elapsed
+            )
+        return conn
 
     def read_connection(self, company: CompanyConfig):
         return self._connect(company, self.cfg.optima.read_user, "sql-read-password")

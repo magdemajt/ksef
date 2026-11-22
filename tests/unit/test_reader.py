@@ -124,3 +124,21 @@ def test_bank_account_from_payment_and_bank_name():
 
     assert SalesReader(Conn()).get_bank_account(1032, "FS/11/2026") == (
         "12105000997603123456789123", "ING Bank Śląski")
+
+
+def test_column_list_is_read_once_per_database():
+    from app.optima import reader as reader_module
+
+    reader_module._COLUMN_CACHE.clear()
+    first, second, other = _Conn(OPTIMA_ROW), _Conn(OPTIMA_ROW), _Conn(OPTIMA_ROW)
+    for conn, key in ((first, "srv/CDN_A"), (second, "srv/CDN_A"), (other, "srv/CDN_B")):
+        SalesReader(conn, cache_key=key).list_sales(date(2026, 10, 1), date(2026, 10, 31))
+
+    def schema_queries(conn):
+        return sum("INFORMATION_SCHEMA" in sql for sql in conn.sqls)
+
+    # drugie wejscie na liste tej samej bazy nie pyta juz o kolumny; inna baza pyta
+    assert (schema_queries(first), schema_queries(second), schema_queries(other)) == (1, 0, 1)
+    # a wynik jest ten sam - kolumny opcjonalne nadal trafiaja do SELECT
+    assert any("T.TrN_NrKSeF" in sql for sql in second.sqls)
+    reader_module._COLUMN_CACHE.clear()

@@ -118,37 +118,73 @@ def vat_register_has(conn, seller_nip: str, invoice_number: str) -> bool:
     return (cur.fetchone() or [0])[0] > 0
 
 
-def find_vat_entry(
-    conn, seller_nip: str, invoice_number: str, ksef_number: str | None = None
-) -> int | None:
-    """VaN_VaNID wpisu rejestru VAT zakupu dla faktury albo None.
+_IN_CHUNK = 500  # SQL Server przyjmuje do 2100 parametrow w zapytaniu
 
-    Najpierw po numerze KSeF (Optima zapisuje go w VaN_NrKSeF - kolumny moze nie byc
-    w starszych wersjach), potem po parze (NIP dostawcy, numer faktury).
+
+def _chunks(values: list[str]):
+    for start in range(0, len(values), _IN_CHUNK):
+        yield values[start:start + _IN_CHUNK]
+
+
+def _doc_key(invoice_number: str, nip: str) -> tuple[str, str]:
+    # jak porownanie w SQL Server: bez wielkosci liter i koncowych spacji
+    return (invoice_number or "").strip().casefold(), normalize_nip(nip)
+
+
+def find_vat_entries(conn, invoices: list[tuple[str, str, str]]) -> dict[str, int]:
+    """Wpisy rejestru VAT zakupu dla wielu faktur naraz: {numer KSeF: VaN_VaNID}.
+
+    invoices: (numer KSeF, NIP dostawcy, numer faktury). Te same reguly co find_vat_entry,
+    ale w 2 zapytaniach na cala liste zamiast 2 na fakture.
     """
-    if ksef_number:
-        cur = conn.cursor()
-        try:
+    found: dict[str, int] = {}
+    ksef_numbers = [ksef for ksef, _, _ in invoices if ksef]
+    try:
+        for chunk in _chunks(ksef_numbers):
+            cur = conn.cursor()
             cur.execute(
-                "SELECT TOP 1 VaN_VaNID FROM CDN.VatNag WHERE VaN_Typ = 1 AND VaN_NrKSeF = ?",
-                (ksef_number,),
+                "SELECT VaN_NrKSeF, VaN_VaNID FROM CDN.VatNag WHERE VaN_Typ = 1 "
+                f"AND VaN_NrKSeF IN ({','.join('?' * len(chunk))})",
+                tuple(chunk),
             )
-            found = cur.fetchone()
-        except Exception:
-            found = None
-        if found:
-            return int(found[0])
-    wanted = normalize_nip(seller_nip)
-    if not wanted or not invoice_number:
-        return None
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT TOP 1 VaN_VaNID FROM CDN.VatNag
-        WHERE VaN_Typ = 1 AND VaN_Dokument = ?
-          AND REPLACE(REPLACE(REPLACE(ISNULL(VaN_KntNipE,''),'-',''),' ',''),'PL','') = ?
-        """,
-        (invoice_number, wanted),
-    )
-    found = cur.fetchone()
-    return int(found[0]) if found else None
+            for ksef, van_id in cur.fetchall():
+                found.setdefault((ksef or "").strip(), int(van_id))
+    except Exception:
+        # starsza Optima bez VaN_NrKSeF - zostaje dopasowanie po NIP i numerze
+        found = {}
+
+    by_doc: dict[tuple[str, str], list[str]] = {}
+    for ksef, nip, number in invoices:
+        key = _doc_key(number, nip)
+        if ksef not in found and all(key):
+            by_doc.setdefault(key, []).append(ksef)
+    numbers = sorted({number.strip() for _, _, number in invoices if (number or "").strip()})
+    for chunk in _chunks(numbers) if by_doc else ():
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT VaN_Dokument, VaN_KntNipE, VaN_VaNID FROM CDN.VatNag WHERE VaN_Typ = 1 "
+            f"AND VaN_Dokument IN ({','.join('?' * len(chunk))})",
+            tuple(chunk),
+        )
+        for number, nip, van_id in cur.fetchall():
+            for ksef in by_doc.get(_doc_key(number, nip or ""), ()):
+                found.setdefault(ksef, int(van_id))
+    return found
+
+
+def ksef_numbers_known(conn, ksef_numbers: list[str]) -> set[str]:
+    """Ktore z numerow KSeF Optima juz pobrala (CDN.DokumentyKSeF) - jedno zapytanie na liste."""
+    known: set[str] = set()
+    try:
+        for chunk in _chunks([n for n in ksef_numbers if n]):
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT DKF_NumerKSeF FROM CDN.DokumentyKSeF "
+                f"WHERE DKF_NumerKSeF IN ({','.join('?' * len(chunk))})",
+                tuple(chunk),
+            )
+            known.update((row[0] or "").strip() for row in cur.fetchall())
+    except Exception:
+        # starsza Optima bez tabeli DokumentyKSeF
+        return set()
+    return known

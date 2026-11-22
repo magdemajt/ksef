@@ -14,7 +14,11 @@ from datetime import UTC, datetime, timedelta
 LIMITS: dict[str, tuple[int, timedelta]] = {
     "invoice_metadata_or_export": (20, timedelta(hours=1)),
     "invoice_send": (180, timedelta(hours=1)),
+    # pobranie faktury po numerze KSeF: 16/min i 64/h - trzymamy sie tuz ponizej
+    "invoice_download_minute": (15, timedelta(minutes=1)),
+    "invoice_download_hour": (60, timedelta(hours=1)),
 }
+DOWNLOAD_ENDPOINTS = ("invoice_download_minute", "invoice_download_hour")
 
 
 class RateLimitExceeded(RuntimeError):
@@ -68,3 +72,18 @@ class RateLimiter:
                 "INSERT INTO rate_limits (company_id, endpoint, ts) VALUES (?,?,?)",
                 (company_id, endpoint, datetime.now(UTC).isoformat()),
             )
+
+    def acquire_all(self, company_id: str, endpoints: tuple[str, ...]) -> None:
+        """Zuzywa po jednostce z kazdego budzetu albo zadnego (gdy ktorys jest wyczerpany)."""
+        now = datetime.now(UTC).isoformat()
+        with self.conn:
+            for endpoint in endpoints:
+                limit, window = LIMITS[endpoint]
+                rows = self._window_rows(company_id, endpoint)
+                if len(rows) >= limit:
+                    raise RateLimitExceeded(endpoint, datetime.fromisoformat(rows[0]) + window)
+            for endpoint in endpoints:
+                self.conn.execute(
+                    "INSERT INTO rate_limits (company_id, endpoint, ts) VALUES (?,?,?)",
+                    (company_id, endpoint, now),
+                )
