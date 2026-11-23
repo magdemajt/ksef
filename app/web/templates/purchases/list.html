@@ -19,12 +19,22 @@
     </span>
     {% if sync_result %}<p><strong>{{ sync_result }}</strong></p>{% endif %}
     {% if pending_xml %}
-    <p class="muted">Czeka na pobranie XML: {{ pending_xml }}. KSeF pozwala pobrac 16 faktur na minute
-       i 64 na godzine - pozostale pobiora sie same w tle, wystarczy zostawic program wlaczony.</p>
+    <p class="muted">Bez pobranego XML: {{ pending_xml }}. Synchronizacja pobiera tylko liste faktur —
+       XML pobierasz przyciskiem "Pobierz XML" dla faktur z wybranego zakresu dat.</p>
     {% endif %}
 </div>
 
-<form method="get" action="/purchases" class="card">
+<details id="xml-queue" class="card"
+         hx-get="/purchases/queue?c={{ company_id }}"
+         hx-vals='js:{open: document.getElementById("xml-queue").open ? 1 : 0}'
+         hx-trigger="every 4s, toggle"
+         hx-target="#xml-queue-body" hx-swap="innerHTML">
+    <summary style="cursor:pointer">Kolejka pobierania XML: {% include "partials/xml_queue_status.html" %}</summary>
+    <div id="xml-queue-body"></div>
+</details>
+
+<div class="card">
+<form method="get" action="/purchases" class="inline">
     <input type="hidden" name="c" value="{{ company_id }}">
     <select name="date_field">
         <option value="issue" {% if filter.date_field == 'issue' %}selected{% endif %}>Data wystawienia</option>
@@ -40,6 +50,14 @@
     <span class="muted">· pokazano {{ rows | length }} z {{ total_rows }}</span>
     {% endif %}
 </form>
+<form method="post" action="/purchases/queue/add{{ filter_qs }}" style="margin-top:.7rem">
+    <input type="hidden" name="c" value="{{ company_id }}">
+    <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+    <button type="submit" {% if not loadable %}disabled{% endif %}
+            title="Wstawia do kolejki pobierania XML faktury z listy ponizej, w pokazanej kolejnosci">Pobierz XML faktur z tego widoku ({{ loadable }})</button>
+    <label><input type="checkbox" name="front" value="1"> przed pozycjami juz stojacymi w kolejce</label>
+</form>
+</div>
 
 <form method="post" action="/purchases/export{{ filter_qs }}">
     <input type="hidden" name="c" value="{{ company_id }}">
@@ -70,7 +88,11 @@
             <td>{{ row['currency'] or 'PLN' }}</td>
             <td>
                 {% if row['status'] == 'new' and not row['xml_path'] %}
-                <span class="badge b-pending_xml" title="XML zostanie pobrany z KSeF w tle">czeka na XML</span>
+                {% if row['id'] in queued_ids %}
+                <span class="badge b-queued" title="XML zostanie pobrany z KSeF w tle">w kolejce XML</span>
+                {% else %}
+                <span class="badge b-pending_xml" title="Tylko dane z listy KSeF - uzyj przycisku Pobierz XML">bez XML</span>
+                {% endif %}
                 {% elif row['status'] == 'new' and row['exported_at'] %}
                 <span class="badge b-xml_exported" title="{{ row['exported_at'][:16] }}">w pliku XML</span>
                 {% else %}

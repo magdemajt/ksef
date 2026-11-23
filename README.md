@@ -109,11 +109,19 @@ i sumy per stawka.
 
 Cała praca odbywa się w GUI: `Sprzedaż` → zaznacz → „Przygotuj wysyłkę” →
 przegląd walidacji → jawne potwierdzenie → statusy na żywo → UPO.
-`Zakupy` → „Synchronizuj z KSeF” → zaznacz → eksport.
+`Zakupy` → „Synchronizuj z KSeF” → filtr dat → „Pobierz XML faktur z tego widoku” →
+zaznacz → eksport.
+
+Synchronizacja (ręczna i cykliczna) pobiera tylko listę faktur (metadane). XML pobiera się
+wyłącznie na żądanie: przycisk wstawia faktury z bieżącego widoku (filtr dat, kolejność jak
+na liście) do kolejki, którą aplikacja opróżnia w tle. Panel „Kolejka pobierania XML” pokazuje
+postęp i pozwala zmienić kolejność czekających pozycji, zatrzymać/wznowić kolejkę i ją
+wyczyścić; zmiany działają od następnej faktury — trwające pobranie zawsze dobiega końca.
+Z linii poleceń: `ksef-bridge sync --xml` wstawia do kolejki wszystkie faktury bez XML.
 
 Limity API KSeF egzekwowane lokalnie (licznik przeżywa restart):
 zapytania o metadane/eksporty **20/h na firmę** (stąd synchronizacja co ≥5 min),
-wysyłka 180/h.
+pobranie XML faktury 16/min i 64/h na firmę, wysyłka 180/h.
 
 ### M5 — bezpośredni zapis do rejestru VAT (opcjonalny)
 

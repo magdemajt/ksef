@@ -134,12 +134,22 @@ def testdata(
 
 
 @app.command()
-def sync(company: str = typer.Option(None, "--company", "-f")):
-    """Reczna synchronizacja faktur zakupu z KSeF."""
+def sync(
+    company: str = typer.Option(None, "--company", "-f"),
+    xml: bool = typer.Option(
+        False, "--xml", help="Wstaw do kolejki wszystkie faktury bez XML i pobieraj do limitu KSeF"
+    ),
+):
+    """Reczna synchronizacja faktur zakupu z KSeF (metadane; XML tylko z --xml)."""
     context = _ctx()
     company_id = company or context.default_company_id()
-    stats = context.download_service(company_id).sync()
+    service = context.download_service(company_id)
+    stats = service.sync()
     print(f"Synchronizacja: {stats}")
+    if xml:
+        pending = context.downloads.pending_xml(company_id, context.cfg.ksef.environment)
+        service.enqueue([row["id"] for row in pending])
+        print(f"Kolejka XML: {service.process_queue()}")
 
 
 @app.command("auth-test")

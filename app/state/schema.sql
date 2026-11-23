@@ -71,6 +71,18 @@ CREATE TABLE IF NOT EXISTS downloaded_invoices (
     UNIQUE (company_id, ksef_number, environment)
 );
 
+-- Kolejka pobierania XML faktur zakupu: trafiaja tu tylko faktury wskazane przez uzytkownika.
+-- Pobierana jest zawsze pozycja 'queued' o najmniejszym position.
+CREATE TABLE IF NOT EXISTS xml_queue (
+    invoice_id INTEGER PRIMARY KEY REFERENCES downloaded_invoices (id) ON DELETE CASCADE,
+    company_id TEXT NOT NULL,
+    environment TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','downloading')),
+    added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_xml_queue ON xml_queue (company_id, environment, position);
+
 CREATE TABLE IF NOT EXISTS sync_state (
     company_id TEXT NOT NULL,
     key TEXT NOT NULL,

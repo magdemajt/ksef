@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 
 from app.fa3.parser import parse_invoice
+from app.ksef.downloader import blocked_until, queue_paused, set_queue_paused
 from app.ksef.ratelimit import RateLimitExceeded
 from app.optima.contractors import (
     find_by_nip,
@@ -43,6 +44,7 @@ STATUS_LABELS = {
 
 # statusy, przy ktorych faktura czeka jeszcze na trafienie do Optimy
 OPEN_STATUSES = ("new", "needs_contractor", "error")
+QUEUE_VIEW_LIMIT = 50  # tyle pozycji kolejki pokazuje panel; reszta jako licznik
 
 
 def _check_in_optima(context: AppContext, company_id: str, *, only_exported: bool) -> dict:
@@ -170,12 +172,44 @@ def _sort_headers(flt: dict, company_id: str) -> dict:
     return headers
 
 
+def _needs_xml(row) -> bool:
+    return not row["xml_path"] and row["status"] in ("new", "error")
+
+
+def _queue_view(context: AppContext, company_id: str, *, opened: bool) -> dict:
+    """Dane panelu kolejki pobierania XML (pelna strona i odswiezany fragment htmx)."""
+    env = context.cfg.ksef.environment
+    total = context.xml_queue.count(company_id, env)
+    # zwiniety panel pokazuje tylko naglowek - wystarczy pierwsza pozycja (ta pobierana)
+    items = context.xml_queue.items(company_id, env, QUEUE_VIEW_LIMIT if opened else 1)
+    waiting = [item for item in items if item["state"] == "queued"]
+    blocked = blocked_until(context.sync_state, company_id, env)
+    return {
+        "context": context, "company_id": company_id, "queue_open": opened,
+        "queue_total": total, "queue_items": items if opened else [],
+        "queue_current": next((i for i in items if i["state"] == "downloading"), None),
+        "queue_first_id": waiting[0]["invoice_id"] if waiting else None,
+        "queue_last_id": waiting[-1]["invoice_id"] if waiting else None,
+        "queue_hidden": max(0, total - len(items)) if opened else 0,
+        "queue_paused": queue_paused(context.sync_state, company_id, env),
+        "queue_blocked": blocked.astimezone().strftime("%H:%M:%S") if blocked else None,
+    }
+
+
+def _render_queue(request: Request, context: AppContext, company_id: str, *, opened: bool = True):
+    return request.app.state.templates.TemplateResponse(
+        request, "partials/xml_queue.html",
+        {**_queue_view(context, company_id, opened=opened), "queue_oob": True},
+    )
+
+
 def _render_list(request: Request, context: AppContext, company_id: str, sync_result=None):
     company = context.company(company_id)
     env = context.cfg.ksef.environment
     all_rows = context.downloads.list_for(company_id, env)
     flt = _date_filter(request)
     rows = _sorted([row for row in all_rows if _in_range(row, flt)], flt)
+    queued_ids = context.xml_queue.ids(company_id, env)
     budget = context.limiter.remaining(company_id, "invoice_metadata_or_export")
     resets = context.limiter.resets_at(company_id, "invoice_metadata_or_export")
     last_sync = context.sync_state.get(company_id, f"purchase_hwm:{env}")
@@ -188,10 +222,11 @@ def _render_list(request: Request, context: AppContext, company_id: str, sync_re
             "budget": budget,
             "resets_at": resets.astimezone().strftime("%H:%M") if resets else None,
             "last_sync": last_sync, "sync_result": sync_result,
-            "pending_xml": sum(
-                1 for row in all_rows
-                if not row["xml_path"] and row["status"] in ("new", "error")
-            ),
+            "pending_xml": sum(1 for row in all_rows if _needs_xml(row)),
+            # faktury bez XML w biezacym widoku - tyle obejmie przycisk "Pobierz XML"
+            "loadable": sum(1 for row in rows if _needs_xml(row)),
+            "queued_ids": queued_ids,
+            **_queue_view(context, company_id, opened=False),
             "total_rows": len(all_rows), "filter": flt, "dates_active": _has_dates(flt),
             "filter_qs": _filter_query(flt, "?"),
             "clear_url": f"/purchases?c={company_id}" + _filter_query(flt, "&", dates=False),
@@ -248,12 +283,93 @@ def purchases_sync(
             f"znanych {stats['known']}"
         )
         if stats.get("pending"):
-            result += f", czeka na pobranie XML: {stats['pending']}"
+            result += f", bez pobranego XML: {stats['pending']} (przycisk \"Pobierz XML\")"
     except RateLimitExceeded as exc:
         result = str(exc)
     except Exception as exc:  # noqa: BLE001
         result = f"Blad synchronizacji: {exc}"
     return _render_list(request, context, c, sync_result=result)
+
+
+@router.post("/purchases/queue/add")
+def purchases_queue_add(
+    request: Request,
+    c: str = Form(...),
+    csrf: str = Form(...),
+    front: bool = Form(False),
+    context: AppContext = Depends(ctx),
+):
+    """Wstawia do kolejki XML faktury z biezacego widoku (filtr dat), w kolejnosci z listy."""
+    context.check_csrf(csrf)
+    env = context.cfg.ksef.environment
+    flt = _date_filter(request)
+    rows = _sorted(
+        [row for row in context.downloads.list_for(c, env) if _in_range(row, flt)], flt
+    )
+    ids = [row["id"] for row in rows if _needs_xml(row)]
+    added = context.xml_queue.add(c, env, ids, front=front)
+    if added["added"] or added["moved"]:
+        context.audit.log(
+            "xml_queue_add", c, environment=env,
+            details={**added, "front": front,
+                     **{k: flt[k] for k in ("date_from", "date_to", "date_field")}},
+        )
+    result = f"Kolejka XML: dodano {added['added']}"
+    if added["moved"]:
+        result += f", przesunieto na poczatek {added['moved']}"
+    if not ids:
+        result = "Wszystkie faktury z tego widoku maja juz XML"
+    elif queue_paused(context.sync_state, c, env):
+        result += ' - kolejka jest zatrzymana, kliknij "Wznow" w panelu kolejki'
+    return _render_list(request, context, c, sync_result=result)
+
+
+@router.get("/purchases/queue")
+def purchases_queue(
+    request: Request, c: str, open: int = 0, context: AppContext = Depends(ctx)
+):
+    """Fragment htmx: panel kolejki (odswiezany co kilka sekund, takze po zwinieciu)."""
+    return _render_queue(request, context, c, opened=bool(open))
+
+
+@router.post("/purchases/queue/move")
+def purchases_queue_move(
+    request: Request,
+    c: str = Form(...),
+    csrf: str = Form(...),
+    id: int = Form(...),
+    where: str = Form(...),
+    context: AppContext = Depends(ctx),
+):
+    context.check_csrf(csrf)
+    env = context.cfg.ksef.environment
+    if where == "remove":
+        context.xml_queue.remove_queued(c, env, id)
+    else:
+        context.xml_queue.move(c, env, id, where)
+    return _render_queue(request, context, c)
+
+
+@router.post("/purchases/queue/control")
+def purchases_queue_control(
+    request: Request,
+    c: str = Form(...),
+    csrf: str = Form(...),
+    action: str = Form(...),
+    context: AppContext = Depends(ctx),
+):
+    """Zatrzymanie, wznowienie i wyczyszczenie kolejki pobierania XML."""
+    context.check_csrf(csrf)
+    env = context.cfg.ksef.environment
+    if action in ("stop", "resume"):
+        set_queue_paused(context.sync_state, c, env, action == "stop")
+        context.audit.log(f"xml_queue_{action}", c, environment=env)
+    elif action == "purge":
+        removed = context.xml_queue.purge(c, env)
+        context.audit.log("xml_queue_purge", c, environment=env, details={"removed": removed})
+    else:
+        raise HTTPException(400, f"Nieznana akcja kolejki: {action}")
+    return _render_queue(request, context, c)
 
 
 @router.post("/purchases/export")

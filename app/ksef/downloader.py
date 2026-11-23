@@ -3,9 +3,12 @@
 Kursor: najwyzsza widziana data permanentStorageDate (HWM) per firma.
 Budzet: zapytania o metadane = 20/h per kontekst - kazda strona zuzywa 1 jednostke,
 limiter jest utrwalony w SQLite i bramkuje zarowno scheduler jak i przycisk reczny.
-HWM przesuwa sie po zapisaniu metadanych calej strony. XML pobierany jest osobno:
-KSeF pozwala na 16 pobran/min i 64/h, wiec przy wiekszej liczbie faktur (nowa firma)
-reszta czeka w kolejce (wiersz bez xml_path) i dociaga sie w kolejnych rundach.
+HWM przesuwa sie po zapisaniu metadanych calej strony.
+
+XML nie pobiera sie sam: synchronizacja zapisuje tylko metadane (wiersz bez xml_path).
+Uzytkownik wskazuje faktury do pobrania - trafiaja do kolejki xml_queue, ktora w tle
+oproznia process_queue(). KSeF pozwala na 16 pobran/min i 64/h, wiec kolejnosc w kolejce
+decyduje, ktore faktury beda dostepne najpierw; kolejke mozna zatrzymac i wyczyscic.
 """
 
 from __future__ import annotations
@@ -20,13 +23,31 @@ from app.config import CompanyConfig, KsefEnv
 from app.fa3.parser import ParseError, parse_invoice
 from app.ksef.gateway import KsefGateway
 from app.ksef.ratelimit import RateLimiter, RateLimitExceeded
-from app.state.repo import AuditRepo, DownloadRepo, SyncStateRepo
+from app.state.repo import AuditRepo, DownloadRepo, SyncStateRepo, XmlQueueRepo
 
 logger = logging.getLogger(__name__)
 
 HWM_KEY = "purchase_hwm"
 BLOCKED_KEY = "download_blocked_until"
+PAUSED_KEY = "xml_queue_paused"
+ERROR_BACKOFF = timedelta(seconds=60)  # po bledzie pobrania (np. brak sieci) - nie mielimy kolejki
 MAX_RANGE_DAYS = 88  # zapas ponizej limitu 3 miesiecy na zakres dat
+
+
+def blocked_until(sync_state: SyncStateRepo, company_id: str, env: str) -> datetime | None:
+    """Do kiedy pobieranie XML jest wstrzymane (limit KSeF albo blad); None = mozna pobierac."""
+    raw = sync_state.get(company_id, f"{BLOCKED_KEY}:{env}")
+    until = datetime.fromisoformat(raw) if raw else None
+    return until if until and until > datetime.now(UTC) else None
+
+
+def queue_paused(sync_state: SyncStateRepo, company_id: str, env: str) -> bool:
+    """Czy uzytkownik zatrzymal kolejke pobierania XML."""
+    return sync_state.get(company_id, f"{PAUSED_KEY}:{env}") == "1"
+
+
+def set_queue_paused(sync_state: SyncStateRepo, company_id: str, env: str, paused: bool) -> None:
+    sync_state.set(company_id, f"{PAUSED_KEY}:{env}", "1" if paused else "")
 
 
 class DownloadService:
@@ -38,6 +59,7 @@ class DownloadService:
         gateway: KsefGateway,
         limiter: RateLimiter,
         downloads: DownloadRepo,
+        queue: XmlQueueRepo,
         sync_state: SyncStateRepo,
         audit: AuditRepo,
         invoice_store: Path,
@@ -49,6 +71,7 @@ class DownloadService:
         self.gateway = gateway
         self.limiter = limiter
         self.downloads = downloads
+        self.queue = queue
         self.sync_state = sync_state
         self.audit = audit
         self.invoice_store = invoice_store
@@ -67,12 +90,11 @@ class DownloadService:
         self.sync_state.set(self.company_id, f"{HWM_KEY}:{self.env}", value.isoformat())
 
     def sync(self, max_pages: int = 4) -> dict:
-        """Jedna runda synchronizacji. Zwraca statystyki dla GUI/CLI."""
+        """Jedna runda synchronizacji metadanych (bez XML). Zwraca statystyki dla GUI/CLI."""
         start_cursor = self._cursor()
         cursor = start_cursor
         now = datetime.now(UTC)
         stats = {"pages": 0, "new": 0, "known": 0, "errors": 0}
-        self.fetch_pending()  # zalegle XML maja pierwszenstwo przed nowymi fakturami
 
         while stats["pages"] < max_pages:
             window_end = min(cursor + timedelta(days=MAX_RANGE_DAYS), now)
@@ -118,53 +140,77 @@ class DownloadService:
     # -- pobieranie XML --
 
     def _blocked_until(self) -> datetime | None:
-        raw = self.sync_state.get(self.company_id, f"{BLOCKED_KEY}:{self.env}")
-        until = datetime.fromisoformat(raw) if raw else None
-        return until if until and until > datetime.now(UTC) else None
+        return blocked_until(self.sync_state, self.company_id, self.env)
 
     def _block_downloads(self, until: datetime) -> None:
         self.sync_state.set(self.company_id, f"{BLOCKED_KEY}:{self.env}", until.isoformat())
         logger.info(
-            "Limit pobran KSeF dla %s - wznowienie o %s",
+            "Pobieranie XML dla %s wstrzymane - wznowienie o %s",
             self.company_id, until.astimezone().strftime("%H:%M:%S"),
         )
 
-    def fetch_pending(self) -> dict:
-        """Dociaga XML faktur czekajacych w kolejce, dopoki pozwala na to limit KSeF."""
-        # wiersze, ktore starsza wersja oznaczyla bledem z powodu limitu (429) - to kolejka
-        with self.downloads.conn:
-            self.downloads.conn.execute(
-                "UPDATE downloaded_invoices SET status='new', error_detail=NULL "
-                "WHERE company_id=? AND environment=? AND xml_path IS NULL "
-                "AND status='error' AND error_detail LIKE '%RATE_LIMIT%'",
-                (self.company_id, self.env),
+    def enqueue(self, invoice_ids: list[int], *, front: bool = False) -> dict:
+        """Wstawia wskazane faktury (te bez XML) do kolejki pobierania."""
+        result = self.queue.add(self.company_id, self.env, invoice_ids, front=front)
+        result["queued"] = self.queue.count(self.company_id, self.env)
+        if result["added"] or result["moved"]:
+            self.audit.log(
+                "xml_queue_add", self.company_id, environment=self.env,
+                details={**result, "front": front},
             )
-        fetched = 0
-        for row in self.downloads.pending_xml(self.company_id, self.env):
-            if self._blocked_until() is not None:
+        return result
+
+    def queue_ready(self) -> bool:
+        """Czy kolejka moze teraz pobierac: nie zatrzymana i bez przerwy na limit."""
+        return (
+            not queue_paused(self.sync_state, self.company_id, self.env)
+            and self._blocked_until() is None
+        )
+
+    def process_queue(self) -> dict:
+        """Pobiera XML z kolejki po kolei, az sie skonczy, zostanie zatrzymana albo trafi na limit.
+
+        Stan (zatrzymanie, kolejnosc) czytany jest przed kazda faktura, wiec zmiany z GUI
+        dzialaja od nastepnej pozycji - trwajace pobranie zawsze dobiega konca.
+        """
+        fetched = failed = 0
+        while self.queue_ready():
+            item = self.queue.claim_next(self.company_id, self.env)
+            if item is None:
                 break
-            fetched += self._fetch(row["id"], row["ksef_number"])
-        pending = len(self.downloads.pending_xml(self.company_id, self.env))
-        return {"fetched": fetched, "pending": pending}
+            outcome = self._fetch(item["invoice_id"], item["ksef_number"])
+            if outcome == "limited":
+                self.queue.release(item["invoice_id"])
+                break
+            self.queue.remove(item["invoice_id"])
+            if outcome == "failed":
+                # blad zostaje przy fakturze (mozna ja dodac ponownie); chwila przerwy,
+                # zeby np. brak sieci nie oznaczyl bledem calej kolejki
+                failed += 1
+                self._block_downloads(datetime.now(UTC) + ERROR_BACKOFF)
+                break
+            fetched += 1
+        return {
+            "fetched": fetched, "failed": failed,
+            "queued": self.queue.count(self.company_id, self.env),
+        }
 
     def _ingest(self, meta) -> bool:
-        """Utrwala fakture z metadanych i probuje pobrac XML. True = nowa, False = juz znana."""
-        existing_new = self.downloads.insert_if_new(
+        """Utrwala metadane faktury (XML pobiera dopiero kolejka). True = nowa, False = znana."""
+        return self.downloads.insert_if_new(
             self.company_id, self.env, meta.ksef_number,
             seller_nip=meta.seller_nip, seller_name=meta.seller_name,
             invoice_number=meta.invoice_number, issue_date=meta.issue_date,
             storage_date=meta.storage_date, net=meta.net, vat=meta.vat,
             gross=meta.gross, currency=meta.currency,
         )
-        if not existing_new:
-            return False
-        row = self._row_id(meta.ksef_number)
-        if row and self._blocked_until() is None:
-            self._fetch(row, meta.ksef_number)
-        return True
 
-    def _fetch(self, row_id: int, ksef_number: str) -> bool:
-        """Pobiera i zapisuje XML jednej faktury. False = zostaje w kolejce albo blad."""
+    def _fetch(self, row_id: int, ksef_number: str) -> str:
+        """Pobiera i zapisuje XML jednej faktury.
+
+        Zwraca "done" (XML zapisany), "limited" (limit KSeF - sprobowac pozniej)
+        albo "failed" (blad zapisany przy fakturze).
+        """
         xml_path = self.invoice_store / self.company_id / f"{ksef_number}.xml"
         try:
             if xml_path.exists() and xml_path.stat().st_size:
@@ -175,16 +221,16 @@ class DownloadService:
                 xml_path.write_bytes(xml)
         except RateLimitExceeded as exc:
             self._block_downloads(exc.resets_at)
-            return False
+            return "limited"
         except KSeFRateLimitError as exc:
             # serwer i tak odmowil (np. z tego samego NIP korzysta inny program)
             wait = timedelta(seconds=(exc.retry_after or 60) + 2)
             self._block_downloads(datetime.now(UTC) + wait)
-            return False
+            return "limited"
         except Exception as exc:
             logger.exception("Pobranie %s nie powiodlo sie", ksef_number)
             self.downloads.set_status(row_id, "error", error_detail=str(exc)[:1000])
-            return False
+            return "failed"
         # sciezka zapisana przed parsowaniem - blad parsowania nie wraca faktury do kolejki
         self.downloads.set_status(row_id, "new", xml_path=str(xml_path), error_detail=None)
         try:
@@ -192,7 +238,7 @@ class DownloadService:
         except ParseError as exc:
             logger.warning("Parsowanie %s nie powiodlo sie: %s", ksef_number, exc)
             self.downloads.set_status(row_id, "error", error_detail=str(exc)[:1000])
-            return True
+            return "done"
         fields = {
             "net": float(parsed.total_net), "vat": float(parsed.total_vat),
             "gross": float(parsed.total_gross), "currency": parsed.currency,
@@ -200,12 +246,4 @@ class DownloadService:
         if parsed.seller_name:
             fields["seller_name"] = parsed.seller_name
         self.downloads.set_status(row_id, "new", **fields)
-        return True
-
-    def _row_id(self, ksef_number: str) -> int | None:
-        row = self.downloads.conn.execute(
-            "SELECT id FROM downloaded_invoices "
-            "WHERE company_id=? AND ksef_number=? AND environment=?",
-            (self.company_id, ksef_number, self.env),
-        ).fetchone()
-        return row["id"] if row else None
+        return "done"

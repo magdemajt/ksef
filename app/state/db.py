@@ -6,7 +6,7 @@ import sqlite3
 from importlib import resources
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: tabela xml_queue
 
 
 def connect(db_path: Path) -> sqlite3.Connection:

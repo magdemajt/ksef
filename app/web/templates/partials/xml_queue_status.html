@@ -1,0 +1,15 @@
+{# Stan kolejki w naglowku panelu; przy odswiezaniu htmx podmieniany poza kolejnoscia (oob). #}
+<span id="xml-queue-status" {% if queue_oob %}hx-swap-oob="true"{% endif %}>
+    <strong>{{ queue_total }}</strong>
+    {% if queue_paused %}
+    <span class="badge b-blocked">zatrzymana</span>
+    {% elif queue_current %}
+    <span class="badge b-queued">pobieranie {{ queue_current['invoice_number'] or queue_current['ksef_number'] }}</span>
+    {% elif queue_total and queue_blocked %}
+    <span class="badge b-duplicate" title="KSeF pozwala pobrac 16 faktur na minute i 64 na godzine; po bledzie pobrania kolejka robi minute przerwy">przerwa do {{ queue_blocked }} (limit KSeF)</span>
+    {% elif queue_total %}
+    <span class="badge b-queued">czeka na pobranie</span>
+    {% else %}
+    <span class="muted">pusta</span>
+    {% endif %}
+</span>

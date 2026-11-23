@@ -1,0 +1,60 @@
+{# Wnetrze panelu kolejki pobierania XML (fragment htmx): tresc tylko dla rozwinietego panelu. #}
+{% if queue_open %}
+<div style="margin:.8rem 0">
+    <form hx-post="/purchases/queue/control" hx-target="#xml-queue-body" hx-swap="innerHTML" class="inline">
+        <input type="hidden" name="c" value="{{ company_id }}">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        {% if queue_paused %}
+        <button type="submit" name="action" value="resume">Wznow</button>
+        {% else %}
+        <button type="submit" name="action" value="stop"
+                title="Trwajace pobranie dobiegnie konca, kolejne nie rusza">Zatrzymaj</button>
+        {% endif %}
+    </form>
+    <form hx-post="/purchases/queue/control" hx-target="#xml-queue-body" hx-swap="innerHTML" class="inline"
+          hx-confirm="Usunac z kolejki wszystkie pozycje ({{ queue_total }})? Pobrane juz XML zostaja.">
+        <input type="hidden" name="c" value="{{ company_id }}">
+        <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+        <button type="submit" name="action" value="purge" class="danger" {% if not queue_total %}disabled{% endif %}
+                title="Usuwa wszystkie pozycje z kolejki; pobrane juz XML zostaja">Wyczysc kolejke</button>
+    </form>
+    <span class="muted">KSeF pozwala pobrac 16 faktur na minute i 64 na godzine — pobierana jest zawsze pierwsza pozycja z gory.</span>
+</div>
+{% if queue_items %}
+<table>
+    <tr><th class="num">#</th><th>Numer faktury</th><th>Sprzedawca</th><th>Data wyst.</th><th>W KSeF</th><th class="num">Brutto</th><th>Kolejnosc</th></tr>
+    {% for item in queue_items %}
+    <tr>
+        <td class="num">{{ loop.index }}</td>
+        <td>{{ item['invoice_number'] }}<div class="muted" style="font-size:.75rem">{{ item['ksef_number'] }}</div></td>
+        <td>{{ item['seller_name'] }}</td>
+        <td>{{ item['issue_date'] }}</td>
+        <td>{{ (item['storage_date'] or '')[:10] }}</td>
+        <td class="num">{{ '%.2f' | format(item['gross'] or 0) }}</td>
+        <td style="white-space:nowrap">
+            {% if item['state'] == 'downloading' %}
+            <span class="badge b-queued">pobieranie…</span>
+            {% else %}
+            {% set first = item['invoice_id'] == queue_first_id %}
+            {% set last = item['invoice_id'] == queue_last_id and not queue_hidden %}
+            <form hx-post="/purchases/queue/move" hx-target="#xml-queue-body" hx-swap="innerHTML" class="inline">
+                <input type="hidden" name="c" value="{{ company_id }}">
+                <input type="hidden" name="csrf" value="{{ context.csrf_token }}">
+                <input type="hidden" name="id" value="{{ item['invoice_id'] }}">
+                <button type="submit" name="where" value="top" title="Na poczatek kolejki" {% if first %}disabled{% endif %}>⤒</button>
+                <button type="submit" name="where" value="up" title="Wyzej" {% if first %}disabled{% endif %}>▲</button>
+                <button type="submit" name="where" value="down" title="Nizej" {% if last %}disabled{% endif %}>▼</button>
+                <button type="submit" name="where" value="bottom" title="Na koniec kolejki" {% if last %}disabled{% endif %}>⤓</button>
+                <button type="submit" name="where" value="remove" class="danger" title="Usun z kolejki">✕</button>
+            </form>
+            {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+{% if queue_hidden %}<p class="muted">… i {{ queue_hidden }} kolejnych pozycji</p>{% endif %}
+{% else %}
+<p class="muted">Kolejka jest pusta — ustaw filtr dat na liscie i kliknij "Pobierz XML".</p>
+{% endif %}
+{% endif %}
+{% if queue_oob %}{% include "partials/xml_queue_status.html" %}{% endif %}

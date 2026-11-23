@@ -1,4 +1,4 @@
-"""Pobieranie faktur zakupu: kolejka XML i limity KSeF (16 pobran/min, 64/h)."""
+"""Pobieranie faktur zakupu: kolejka XML na zadanie i limity KSeF (16 pobran/min, 64/h)."""
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -6,11 +6,11 @@ from types import SimpleNamespace
 import pytest
 from ksef2.core.exceptions import KSeFRateLimitError
 
-from app.ksef.downloader import DownloadService
+from app.ksef.downloader import ERROR_BACKOFF, DownloadService, set_queue_paused
 from app.ksef.models import MetadataPage, PurchaseInvoiceMeta
 from app.ksef.ratelimit import DOWNLOAD_ENDPOINTS, LIMITS, RateLimiter, RateLimitExceeded
 from app.state import db as state_db
-from app.state.repo import AuditRepo, DownloadRepo, SyncStateRepo
+from app.state.repo import AuditRepo, DownloadRepo, SyncStateRepo, XmlQueueRepo
 from tests.unit.test_parser_and_validator import _built_invoice_xml
 
 PER_MINUTE = LIMITS["invoice_download_minute"][0]
@@ -33,7 +33,7 @@ class FakeGateway:
         self.limiter = limiter
         self.page = MetadataPage(invoices=[_meta(i) for i in range(invoices)])
         self.downloaded: list[str] = []
-        self.server_refuses_with: KSeFRateLimitError | None = None
+        self.server_refuses_with: Exception | None = None
         self.xml = _built_invoice_xml()
 
     def query_purchase_metadata(self, date_from, date_to=None, page_offset=0):
@@ -52,17 +52,21 @@ def env(tmp_path):
     conn = state_db.connect(tmp_path / "state.db")
     limiter = RateLimiter(conn)
     downloads = DownloadRepo(conn)
+    queue = XmlQueueRepo(conn)
 
     def build(invoices: int):
         gateway = FakeGateway(limiter, invoices)
         service = DownloadService(
             company_id="firma_a", company=None, env="test", gateway=gateway, limiter=limiter,
-            downloads=downloads, sync_state=SyncStateRepo(conn), audit=AuditRepo(conn),
+            downloads=downloads, queue=queue, sync_state=SyncStateRepo(conn),
+            audit=AuditRepo(conn),
             invoice_store=tmp_path / "invoices", backfill_start="2026-08-01",
         )
         return service, gateway
 
-    return SimpleNamespace(conn=conn, downloads=downloads, limiter=limiter, build=build)
+    return SimpleNamespace(
+        conn=conn, downloads=downloads, queue=queue, limiter=limiter, build=build
+    )
 
 
 def _minute_passes(conn) -> None:
@@ -77,27 +81,77 @@ def _statuses(downloads) -> list[tuple[str, bool]]:
     return [(r["status"], bool(r["xml_path"])) for r in downloads.list_for("firma_a", "test")]
 
 
-def test_sync_downloads_up_to_minute_limit_and_queues_the_rest(env):
+def _unblock(conn) -> None:
+    conn.execute("DELETE FROM sync_state WHERE key LIKE 'download_blocked_until%'")
+    conn.commit()
+
+
+def _ids(env, *numbers: int) -> list[int]:
+    """Identyfikatory wierszy faktur FA/<n> w podanej kolejnosci."""
+    by_number = {r["invoice_number"]: r["id"] for r in env.downloads.list_for("firma_a", "test")}
+    return [by_number[f"FA/{n}"] for n in numbers]
+
+
+def _all_ids(env) -> list[int]:
+    return [r["id"] for r in env.downloads.pending_xml("firma_a", "test")]
+
+
+def _queue_order(env) -> list[str]:
+    return [item["invoice_number"] for item in env.queue.items("firma_a", "test")]
+
+
+def test_sync_stores_metadata_only_and_downloads_nothing(env):
     service, gateway = env.build(40)
     stats = service.sync()
     assert stats["new"] == 40
-    assert stats["pending"] == 40 - PER_MINUTE
-    assert len(gateway.downloaded) == PER_MINUTE
-    # nic nie jest bledem: reszta czeka jako "new" bez pliku XML
-    assert sorted(_statuses(env.downloads)) == sorted(
-        [("new", True)] * PER_MINUTE + [("new", False)] * (40 - PER_MINUTE)
-    )
+    assert stats["pending"] == 40
+    assert gateway.downloaded == []
+    assert _statuses(env.downloads) == [("new", False)] * 40
+    # bez wskazania faktur kolejka jest pusta - w tle nic sie nie pobierze
+    assert service.process_queue() == {"fetched": 0, "failed": 0, "queued": 0}
+    assert gateway.downloaded == []
+
+
+def test_only_enqueued_invoices_are_downloaded(env):
+    service, gateway = env.build(10)
+    service.sync()
+    assert service.enqueue(_ids(env, 7, 2, 5)) == {"added": 3, "moved": 0, "queued": 3}
+    assert service.process_queue() == {"fetched": 3, "failed": 0, "queued": 0}
+    assert [n.split("-")[2].lstrip("0") for n in gateway.downloaded] == ["7", "2", "5"]
+    assert sorted(_statuses(env.downloads)) == sorted([("new", True)] * 3 + [("new", False)] * 7)
+
+
+def test_enqueue_skips_invoices_with_xml_and_those_already_queued(env):
+    service, _ = env.build(4)
+    service.sync()
+    service.enqueue(_ids(env, 0))
+    service.process_queue()
+    assert service.enqueue(_ids(env, 0, 1, 2)) == {"added": 2, "moved": 0, "queued": 2}
+    assert service.enqueue(_ids(env, 1, 2, 3)) == {"added": 1, "moved": 0, "queued": 3}
+    assert _queue_order(env) == ["FA/1", "FA/2", "FA/3"]
+
+
+def test_enqueue_at_front_goes_before_waiting_items(env):
+    service, _ = env.build(6)
+    service.sync()
+    service.enqueue(_ids(env, 0, 1, 2))
+    # FA/2 juz czeka - przechodzi na poczatek razem z nowymi, w podanej kolejnosci
+    assert service.enqueue(_ids(env, 5, 2, 4), front=True) == {
+        "added": 2, "moved": 1, "queued": 5,
+    }
+    assert _queue_order(env) == ["FA/5", "FA/2", "FA/4", "FA/0", "FA/1"]
 
 
 def test_queue_drains_minute_by_minute_until_done(env):
     service, gateway = env.build(40)
     service.sync()
+    service.enqueue(_all_ids(env))
+    assert service.process_queue() == {"fetched": PER_MINUTE, "failed": 0, "queued": 40 - PER_MINUTE}
     rounds = 0
-    while env.downloads.pending_xml("firma_a", "test"):
+    while env.queue.count("firma_a", "test"):
         _minute_passes(env.conn)
-        env.conn.execute("DELETE FROM sync_state WHERE key LIKE 'download_blocked_until%'")
-        env.conn.commit()
-        service.fetch_pending()
+        _unblock(env.conn)
+        service.process_queue()
         rounds += 1
         assert rounds < 10
     assert len(set(gateway.downloaded)) == 40
@@ -107,29 +161,35 @@ def test_queue_drains_minute_by_minute_until_done(env):
 def test_queue_waits_for_the_limit_window_instead_of_retrying(env):
     service, gateway = env.build(40)
     service.sync()
+    service.enqueue(_all_ids(env))
+    service.process_queue()
     before = len(gateway.downloaded)
-    assert service.fetch_pending() == {"fetched": 0, "pending": 40 - PER_MINUTE}
+    assert not service.queue_ready()
+    assert service.process_queue() == {"fetched": 0, "failed": 0, "queued": 40 - PER_MINUTE}
     assert len(gateway.downloaded) == before
     assert env.limiter.remaining("firma_a", "invoice_download_hour") == PER_HOUR - PER_MINUTE
+    # pozycja, na ktorej skonczyl sie limit, wrocila do kolejki jako czekajaca
+    assert {item["state"] for item in env.queue.items("firma_a", "test")} == {"queued"}
 
 
 def test_hourly_limit_is_not_exceeded(env):
     service, gateway = env.build(PER_HOUR + 20)
     service.sync()
+    service.enqueue(_all_ids(env))
     for _ in range(12):
         _minute_passes(env.conn)
-        env.conn.execute("DELETE FROM sync_state WHERE key LIKE 'download_blocked_until%'")
-        env.conn.commit()
-        service.fetch_pending()
+        _unblock(env.conn)
+        service.process_queue()
     assert len(gateway.downloaded) == PER_HOUR
-    assert len(env.downloads.pending_xml("firma_a", "test")) == 20
+    assert env.queue.count("firma_a", "test") == 20
 
 
 def test_server_429_keeps_invoice_queued_and_pauses_downloads(env):
     service, gateway = env.build(3)
     gateway.server_refuses_with = KSeFRateLimitError(33, "KSeF rate limit exceeded")
-    stats = service.sync()
-    assert stats["pending"] == 3
+    service.sync()
+    service.enqueue(_all_ids(env))
+    assert service.process_queue() == {"fetched": 0, "failed": 0, "queued": 3}
     assert _statuses(env.downloads) == [("new", False)] * 3
     # jedno odbicie od serwera wystarczy - kolejnych faktur nie probujemy w tej rundzie
     assert env.limiter.remaining("firma_a", "invoice_download_minute") == PER_MINUTE - 1
@@ -137,11 +197,134 @@ def test_server_429_keeps_invoice_queued_and_pauses_downloads(env):
     assert timedelta(seconds=30) < blocked - datetime.now(UTC) < timedelta(seconds=40)
 
     gateway.server_refuses_with = None
-    service.sync_state.set("firma_a", "download_blocked_until:test", datetime.now(UTC).isoformat())
-    assert service.fetch_pending() == {"fetched": 3, "pending": 0}
+    _unblock(env.conn)
+    assert service.process_queue() == {"fetched": 3, "failed": 0, "queued": 0}
 
 
-def test_rows_marked_as_error_by_older_version_are_picked_up(env):
+def test_failed_download_leaves_the_rest_of_the_queue_alone(env):
+    service, gateway = env.build(3)
+    service.sync()
+    service.enqueue(_ids(env, 0, 1, 2))
+    gateway.server_refuses_with = ConnectionError("brak sieci")
+    assert service.process_queue() == {"fetched": 0, "failed": 1, "queued": 2}
+    failed = env.downloads.get(_ids(env, 0)[0])
+    assert (failed["status"], failed["error_detail"]) == ("error", "brak sieci")
+    # przerwa po bledzie: awaria sieci nie oznacza bledem calej kolejki w kilka sekund
+    wait = service._blocked_until() - datetime.now(UTC)
+    assert ERROR_BACKOFF - timedelta(seconds=5) < wait <= ERROR_BACKOFF
+    assert service.process_queue() == {"fetched": 0, "failed": 0, "queued": 2}
+
+    gateway.server_refuses_with = None
+    _unblock(env.conn)
+    # faktura z bledem nadal nie ma XML - mozna ja wstawic do kolejki ponownie
+    assert service.enqueue(_ids(env, 0))["added"] == 1
+    assert service.process_queue() == {"fetched": 3, "failed": 0, "queued": 0}
+    assert _statuses(env.downloads) == [("new", True)] * 3
+
+
+def test_stopped_queue_downloads_nothing_until_resumed(env):
+    service, gateway = env.build(3)
+    service.sync()
+    service.enqueue(_all_ids(env))
+    set_queue_paused(service.sync_state, "firma_a", "test", True)
+    assert not service.queue_ready()
+    assert service.process_queue() == {"fetched": 0, "failed": 0, "queued": 3}
+    assert gateway.downloaded == []
+    set_queue_paused(service.sync_state, "firma_a", "test", False)
+    assert service.process_queue() == {"fetched": 3, "failed": 0, "queued": 0}
+
+
+def test_stop_takes_effect_after_the_invoice_being_downloaded(env):
+    service, gateway = env.build(3)
+    service.sync()
+    service.enqueue(_all_ids(env))
+    download = gateway.download_invoice
+
+    def stop_during_first_download(ksef_number):
+        set_queue_paused(service.sync_state, "firma_a", "test", True)
+        return download(ksef_number)
+
+    gateway.download_invoice = stop_during_first_download
+    # trwajace pobranie dobiega konca, nastepne juz nie rusza
+    assert service.process_queue() == {"fetched": 1, "failed": 0, "queued": 2}
+
+
+def test_priority_change_decides_what_is_downloaded_next(env):
+    service, gateway = env.build(5)
+    service.sync()
+    service.enqueue(_ids(env, 0, 1, 2, 3, 4))
+    (three,) = _ids(env, 3)
+    (zero,) = _ids(env, 0)
+    assert env.queue.move("firma_a", "test", three, "top")
+    assert _queue_order(env) == ["FA/3", "FA/0", "FA/1", "FA/2", "FA/4"]
+    assert env.queue.move("firma_a", "test", zero, "down")
+    assert _queue_order(env) == ["FA/3", "FA/1", "FA/0", "FA/2", "FA/4"]
+    assert env.queue.move("firma_a", "test", zero, "up")
+    assert env.queue.move("firma_a", "test", zero, "bottom")
+    assert _queue_order(env) == ["FA/3", "FA/1", "FA/2", "FA/4", "FA/0"]
+    assert not env.queue.move("firma_a", "test", three, "up")  # juz pierwsza
+    assert not env.queue.move("firma_a", "test", zero, "down")  # juz ostatnia
+    service.process_queue()
+    assert [n.split("-")[2].lstrip("0") or "0" for n in gateway.downloaded] == [
+        "3", "1", "2", "4", "0",
+    ]
+
+
+def test_invoice_being_downloaded_cannot_be_moved_or_removed(env):
+    service, _ = env.build(3)
+    service.sync()
+    service.enqueue(_ids(env, 0, 1, 2))
+    current = env.queue.claim_next("firma_a", "test")
+    (two,) = _ids(env, 2)
+    assert not env.queue.move("firma_a", "test", current["invoice_id"], "bottom")
+    assert not env.queue.remove_queued("firma_a", "test", current["invoice_id"])
+    # "na poczatek" i "wyzej" dotycza tylko czekajacych - pobierana zostaje pierwsza
+    assert env.queue.move("firma_a", "test", two, "top")
+    assert env.queue.move("firma_a", "test", _ids(env, 1)[0], "up")
+    assert not env.queue.move("firma_a", "test", _ids(env, 1)[0], "up")
+    assert _queue_order(env) == ["FA/0", "FA/1", "FA/2"]
+    assert [i["state"] for i in env.queue.items("firma_a", "test")] == [
+        "downloading", "queued", "queued",
+    ]
+    # ponowne dodanie "na poczatek" tez jej nie rusza
+    service.enqueue(_ids(env, 0, 2), front=True)
+    assert env.queue.items("firma_a", "test")[0]["state"] == "downloading"
+
+
+def test_purge_empties_the_queue_and_keeps_downloaded_xml(env):
+    service, gateway = env.build(5)
+    service.sync()
+    service.enqueue(_ids(env, 0))
+    service.process_queue()
+    service.enqueue(_all_ids(env))
+    assert env.queue.purge("firma_a", "test") == 4
+    assert service.process_queue() == {"fetched": 0, "failed": 0, "queued": 0}
+    assert len(gateway.downloaded) == 1
+    assert sorted(_statuses(env.downloads)) == sorted([("new", True)] + [("new", False)] * 4)
+
+
+def test_interrupted_download_returns_to_queue_after_restart(env):
+    service, _ = env.build(2)
+    service.sync()
+    service.enqueue(_all_ids(env))
+    env.queue.claim_next("firma_a", "test")  # proces padl w trakcie pobierania
+    env.queue.release_all()
+    assert service.process_queue() == {"fetched": 2, "failed": 0, "queued": 0}
+
+
+def test_queues_of_companies_are_separate(env):
+    service, _ = env.build(2)
+    service.sync()
+    env.downloads.insert_if_new("firma_b", "test", _meta(9).ksef_number, invoice_number="FA/9")
+    other = env.downloads.list_for("firma_b", "test")[0]["id"]
+    # cudzej faktury nie da sie wstawic do kolejki firmy
+    assert service.enqueue([other, *_all_ids(env)])["added"] == 2
+    env.queue.add("firma_b", "test", [other])
+    assert env.queue.purge("firma_a", "test") == 2
+    assert env.queue.count("firma_b", "test") == 1
+
+
+def test_rows_marked_as_error_by_older_version_can_be_enqueued(env):
     service, _ = env.build(0)
     env.downloads.insert_if_new("firma_a", "test", _meta(1).ksef_number, invoice_number="FA/1")
     row_id = env.downloads.list_for("firma_a", "test")[0]["id"]
@@ -149,7 +332,8 @@ def test_rows_marked_as_error_by_older_version_are_picked_up(env):
         row_id, "error",
         error_detail="RATE_LIMIT_ERROR/429: KSeF rate limit exceeded: Przekroczono limit 16",
     )
-    assert service.fetch_pending() == {"fetched": 1, "pending": 0}
+    service.enqueue([row_id])
+    assert service.process_queue() == {"fetched": 1, "failed": 0, "queued": 0}
     row = env.downloads.get(row_id)
     assert (row["status"], row["error_detail"], bool(row["xml_path"])) == ("new", None, True)
 
@@ -158,9 +342,12 @@ def test_unparsable_invoice_is_not_downloaded_again(env):
     service, gateway = env.build(1)
     gateway.xml = b"<not-an-invoice/>"
     service.sync()
+    service.enqueue(_all_ids(env))
+    service.process_queue()
     row = env.downloads.list_for("firma_a", "test")[0]
     assert row["status"] == "error" and row["xml_path"]
     assert env.downloads.pending_xml("firma_a", "test") == []
+    assert service.enqueue([row["id"]])["added"] == 0
 
 
 def test_acquire_all_consumes_nothing_when_one_budget_is_spent(env):

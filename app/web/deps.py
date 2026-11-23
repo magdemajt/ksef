@@ -24,6 +24,7 @@ from app.state.repo import (
     SentRepo,
     SessionRepo,
     SyncStateRepo,
+    XmlQueueRepo,
 )
 
 
@@ -62,6 +63,10 @@ class AppContext:
     @property
     def downloads(self) -> DownloadRepo:
         return DownloadRepo(self.conn)
+
+    @property
+    def xml_queue(self) -> XmlQueueRepo:
+        return XmlQueueRepo(self.conn)
 
     @property
     def sync_state(self) -> SyncStateRepo:
@@ -127,6 +132,7 @@ class AppContext:
             gateway=self.gateway(company_id),
             limiter=self.limiter,
             downloads=self.downloads,
+            queue=self.xml_queue,
             sync_state=self.sync_state,
             audit=self.audit,
             invoice_store=self.cfg.state.invoice_store,

@@ -9,12 +9,16 @@ from lxml import etree
 from app.config import CompanyConfig
 from app.main import build_templates
 from app.state import db as state_db
-from app.state.repo import DownloadRepo
+from app.state.repo import DownloadRepo, SyncStateRepo, XmlQueueRepo
 from app.web.routes.purchases import (
     purchase_detail,
     purchases_check,
     purchases_export,
     purchases_list,
+    purchases_queue,
+    purchases_queue_add,
+    purchases_queue_control,
+    purchases_queue_move,
 )
 from tests.unit.test_parser_and_validator import _built_invoice_xml
 
@@ -60,6 +64,8 @@ def setup(tmp_path):
             company=lambda cid: company,
             cfg=SimpleNamespace(ksef=SimpleNamespace(environment="test")),
             downloads=downloads,
+            xml_queue=XmlQueueRepo(conn),
+            sync_state=SyncStateRepo(conn),
             optima=SimpleNamespace(
                 read_connection=lambda comp: SimpleNamespace(cursor=lambda: FakeCursor(duplicates))
             ),
@@ -392,3 +398,164 @@ def test_check_uses_constant_number_of_optima_queries(setup, listed):
     assert len(RegisterCursor.queries) == 3  # nie 2-3 na kazda z 41 faktur
     assert [r["invoice_number"] for r in downloads.list_for("firma_a", "test")
             if r["status"] == "already_in_optima"] == ["FA/7"]
+
+
+# -- kolejka pobierania XML --
+
+
+@pytest.fixture
+def queue_setup(setup):
+    """Trzy faktury bez XML (wrzesien, pazdziernik, listopad) obok jednej z XML z `setup`."""
+    downloads, _, make_context = setup
+    for number, issued, stored in (
+        ("FA/WRZ", "2026-09-30", "2026-10-02T08:00:00+00:00"),
+        ("FA/PAZ", "2026-10-15", "2026-10-15T09:00:00+00:00"),
+        ("FA/LIS", "2026-11-03", "2026-11-03T10:00:00+00:00"),
+    ):
+        downloads.insert_if_new(
+            "firma_a", "test", f"KSEF-{number}", invoice_number=number, issue_date=issued,
+            storage_date=stored,
+        )
+    context = make_context(0)
+    context.cfg.companies = {"firma_a": context.company("firma_a")}
+    context.csrf_token = "x"
+    context.default_company_id = lambda: "firma_a"
+    context.limiter = SimpleNamespace(remaining=lambda c, e: 20, resets_at=lambda c, e: None)
+    templates = build_templates()
+    captured = {}
+
+    def template_response(request, name, variables):
+        captured["html"] = templates.env.get_template(name).render(request=request, **variables)
+
+    def request(**query):
+        return SimpleNamespace(
+            url=SimpleNamespace(path="/purchases"), query_params=query,
+            app=SimpleNamespace(state=SimpleNamespace(
+                templates=SimpleNamespace(TemplateResponse=template_response)
+            )),
+        )
+
+    def order():
+        return [item["invoice_number"] for item in context.xml_queue.items("firma_a", "test")]
+
+    def row_id(number):
+        return next(
+            r["id"] for r in downloads.list_for("firma_a", "test") if r["invoice_number"] == number
+        )
+
+    return SimpleNamespace(
+        context=context, request=request, captured=captured, order=order, row_id=row_id
+    )
+
+
+def test_list_offers_xml_download_for_invoices_in_view(queue_setup):
+    q = queue_setup
+    purchases_list(request=q.request(), c="firma_a", context=q.context)
+    assert "Pobierz XML faktur z tego widoku (3)" in q.captured["html"]
+    assert q.captured["html"].count(">bez XML</span>") == 3
+    purchases_list(
+        request=q.request(date_from="2026-10-01", date_to="2026-10-31"), c="firma_a",
+        context=q.context,
+    )
+    html = q.captured["html"]
+    assert "Pobierz XML faktur z tego widoku (1)" in html
+    assert 'action="/purchases/queue/add?date_from=2026-10-01&amp;date_to=2026-10-31' in html
+
+
+def test_queue_add_takes_only_filtered_invoices_in_list_order(queue_setup):
+    q = queue_setup
+    purchases_queue_add(
+        request=q.request(date_from="2026-10-01", date_to="2026-11-30"), c="firma_a", csrf="x",
+        front=False, context=q.context,
+    )
+    # domyslne sortowanie listy: najnowsze w KSeF na gorze; FA/RT/1 ma juz XML
+    assert q.order() == ["FA/LIS", "FA/PAZ"]
+    html = q.captured["html"]
+    assert "Kolejka XML: dodano 2" in html
+    assert html.count(">w kolejce XML</span>") == 2
+    # lista wraca z tym samym filtrem; FA/WRZ (poza zakresem) nie trafila do kolejki
+    assert "pokazano 3 z 4" in html
+    assert "Pobierz XML faktur z tego widoku (2)" in html
+
+
+def test_queue_add_follows_chosen_sort_and_front_option(queue_setup):
+    q = queue_setup
+    purchases_queue_add(
+        request=q.request(date_from="2026-11-01"), c="firma_a", csrf="x", front=False,
+        context=q.context,
+    )
+    purchases_queue_add(
+        request=q.request(date_to="2026-10-31", sort="issue", dir="asc"), c="firma_a", csrf="x",
+        front=True, context=q.context,
+    )
+    assert q.order() == ["FA/WRZ", "FA/PAZ", "FA/LIS"]
+
+
+def test_queue_add_reports_stopped_queue_and_nothing_to_do(queue_setup):
+    q = queue_setup
+    purchases_queue_control(
+        request=q.request(), c="firma_a", csrf="x", action="stop", context=q.context
+    )
+    purchases_queue_add(request=q.request(), c="firma_a", csrf="x", front=False, context=q.context)
+    assert "kolejka jest zatrzymana" in q.captured["html"]
+    purchases_queue_add(
+        request=q.request(date_from="2027-01-01"), c="firma_a", csrf="x", front=False,
+        context=q.context,
+    )
+    assert "Wszystkie faktury z tego widoku maja juz XML" in q.captured["html"]
+
+
+def test_queue_panel_closed_shows_only_status(queue_setup):
+    q = queue_setup
+    purchases_queue_add(request=q.request(), c="firma_a", csrf="x", front=False, context=q.context)
+    purchases_queue(request=q.request(), c="firma_a", open=0, context=q.context)
+    html = q.captured["html"]
+    assert 'hx-swap-oob="true"' in html and "<strong>3</strong>" in html
+    assert "czeka na pobranie" in html
+    assert "<table>" not in html and "Zatrzymaj" not in html
+
+
+def test_queue_panel_open_lists_items_with_controls(queue_setup):
+    q = queue_setup
+    purchases_queue_add(request=q.request(), c="firma_a", csrf="x", front=False, context=q.context)
+    q.context.xml_queue.claim_next("firma_a", "test")
+    purchases_queue(request=q.request(), c="firma_a", open=1, context=q.context)
+    html = q.captured["html"]
+    assert "pobieranie FA/LIS" in html  # naglowek pokazuje fakture w trakcie
+    assert html.count('hx-post="/purchases/queue/move"') == 2  # pobieranej nie da sie ruszyc
+    assert "Zatrzymaj" in html and "Wyczysc kolejke" in html
+
+
+def test_queue_move_and_remove_reorder_waiting_items(queue_setup):
+    q = queue_setup
+    purchases_queue_add(request=q.request(), c="firma_a", csrf="x", front=False, context=q.context)
+    assert q.order() == ["FA/LIS", "FA/PAZ", "FA/WRZ"]
+    purchases_queue_move(
+        request=q.request(), c="firma_a", csrf="x", id=q.row_id("FA/WRZ"), where="top",
+        context=q.context,
+    )
+    assert q.order() == ["FA/WRZ", "FA/LIS", "FA/PAZ"]
+    purchases_queue_move(
+        request=q.request(), c="firma_a", csrf="x", id=q.row_id("FA/LIS"), where="remove",
+        context=q.context,
+    )
+    assert q.order() == ["FA/WRZ", "FA/PAZ"]
+    assert "<table>" in q.captured["html"]  # akcja zwraca rozwiniety panel
+
+
+def test_queue_control_stops_resumes_and_purges(queue_setup):
+    q = queue_setup
+    purchases_queue_add(request=q.request(), c="firma_a", csrf="x", front=False, context=q.context)
+    purchases_queue_control(
+        request=q.request(), c="firma_a", csrf="x", action="stop", context=q.context
+    )
+    assert "zatrzymana" in q.captured["html"] and "Wznow" in q.captured["html"]
+    purchases_queue_control(
+        request=q.request(), c="firma_a", csrf="x", action="resume", context=q.context
+    )
+    assert "Zatrzymaj" in q.captured["html"]
+    purchases_queue_control(
+        request=q.request(), c="firma_a", csrf="x", action="purge", context=q.context
+    )
+    assert q.order() == []
+    assert "Kolejka jest pusta" in q.captured["html"]

@@ -1,4 +1,4 @@
-"""Fabryka aplikacji FastAPI + scheduler pobierania zakupow."""
+"""Fabryka aplikacji FastAPI + scheduler synchronizacji zakupow i kolejka pobierania XML."""
 
 from __future__ import annotations
 
@@ -33,24 +33,37 @@ def _fmt_price(value: Decimal) -> str:
     return f"{value:.{digits}f}"
 
 
-PENDING_POLL_SECONDS = 65
+QUEUE_POLL_SECONDS = 3
 SLOW_REQUEST_SECONDS = 1.0
 
 
-async def _fetch_pending_xml(context: AppContext) -> None:
-    env = context.cfg.ksef.environment
-    for company_id in list(context.cfg.companies):
-        if not context.downloads.pending_xml(company_id, env):
-            continue
-        try:
-            result = await asyncio.to_thread(context.download_service(company_id).fetch_pending)
-            logger.info("Kolejka XML %s: %s", company_id, result)
-        except Exception:
-            logger.exception("Kolejka XML: pobieranie dla %s nie powiodlo sie", company_id)
+async def _queue_worker(app: FastAPI) -> None:
+    """Pobiera XML faktur, ktore uzytkownik wstawil do kolejki (zakladka Zakupy).
+
+    Kolejka kazdej firmy jest sprawdzana co kilka sekund; process_queue konczy sie sam,
+    gdy kolejka jest pusta, zatrzymana albo wyczerpal sie limit KSeF (16/min, 64/h).
+    """
+    context: AppContext = app.state.ctx
+    context.xml_queue.release_all()  # po restarcie zadna pozycja nie jest w trakcie pobierania
+    while True:
+        await asyncio.sleep(QUEUE_POLL_SECONDS)
+        env = context.cfg.ksef.environment
+        for company_id in list(context.cfg.companies):
+            try:
+                if not context.xml_queue.count(company_id, env):
+                    continue
+                service = context.download_service(company_id)
+                if not service.queue_ready():
+                    continue
+                result = await asyncio.to_thread(service.process_queue)
+                if result["fetched"] or result["failed"]:
+                    logger.info("Kolejka XML %s: %s", company_id, result)
+            except Exception:
+                logger.exception("Kolejka XML: pobieranie dla %s nie powiodlo sie", company_id)
 
 
 async def _sync_scheduler(app: FastAPI) -> None:
-    """Cyklicznie pobiera nowe faktury zakupu dla kazdej firmy (rozlozone w czasie)."""
+    """Cyklicznie pobiera metadane nowych faktur zakupu dla kazdej firmy (bez XML)."""
     context: AppContext = app.state.ctx
     interval = context.cfg.sync.poll_interval_minutes * 60
     await asyncio.sleep(30)  # daj aplikacji wystartowac
@@ -64,13 +77,7 @@ async def _sync_scheduler(app: FastAPI) -> None:
             except Exception:
                 logger.exception("Scheduler: synchronizacja %s nie powiodla sie", company_id)
             await asyncio.sleep(10)  # odstep miedzy firmami
-        # Do nastepnej rundy: co ~minute dociagaj XML faktur czekajacych w kolejce
-        # (limit KSeF 16 pobran/min, 64/h - nowa firma ma ich na start duzo wiecej).
-        waited = 0
-        while waited < interval:
-            await asyncio.sleep(PENDING_POLL_SECONDS)
-            waited += PENDING_POLL_SECONDS
-            await _fetch_pending_xml(context)
+        await asyncio.sleep(interval)
 
 
 def build_templates() -> Jinja2Templates:
@@ -87,11 +94,15 @@ def create_app(cfg: AppConfig | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.ctx = AppContext.create(cfg)
-        task = asyncio.create_task(_sync_scheduler(app))
+        tasks = [
+            asyncio.create_task(_sync_scheduler(app)),
+            asyncio.create_task(_queue_worker(app)),
+        ]
         try:
             yield
         finally:
-            task.cancel()
+            for task in tasks:
+                task.cancel()
             app.state.ctx.conn.close()
 
     app = FastAPI(title="ksef-bridge", lifespan=lifespan)

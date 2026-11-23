@@ -164,6 +164,179 @@ class DownloadRepo:
             self.conn.execute(q, [status, *fields.values(), invoice_id])
 
 
+class XmlQueueRepo:
+    """Kolejka pobierania XML faktur zakupu (kolejnosc = rosnace position)."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def add(
+        self, company_id: str, environment: str, invoice_ids: list[int], *, front: bool = False
+    ) -> dict:
+        """Dodaje faktury bez XML w podanej kolejnosci; front=True stawia je przed reszta.
+
+        Faktury juz stojace w kolejce zostaja na miejscu, chyba ze front=True - wtedy
+        przechodza na poczatek. Faktura wlasnie pobierana nie jest ruszana.
+        """
+        scope = (company_id, environment)
+        with self.conn:
+            eligible = {
+                row["id"] for row in self.conn.execute(
+                    "SELECT id FROM downloaded_invoices WHERE company_id=? AND environment=? "
+                    "AND xml_path IS NULL AND status IN ('new','error')", scope,
+                )
+            }
+            queued = {
+                row["invoice_id"]: row["state"] for row in self.conn.execute(
+                    "SELECT invoice_id, state FROM xml_queue WHERE company_id=? AND environment=?",
+                    scope,
+                )
+            }
+            ids = [
+                i for i in dict.fromkeys(invoice_ids)
+                if i in eligible and queued.get(i) != "downloading" and (front or i not in queued)
+            ]
+            low, high = self._bounds(company_id, environment)
+            start = low - len(ids) if front else high + 1
+            for offset, invoice_id in enumerate(ids):
+                self.conn.execute(
+                    "INSERT INTO xml_queue (invoice_id, company_id, environment, position) "
+                    "VALUES (?,?,?,?) ON CONFLICT(invoice_id) DO UPDATE SET "
+                    "position=excluded.position",
+                    (invoice_id, company_id, environment, start + offset),
+                )
+        moved = sum(1 for i in ids if i in queued)
+        return {"added": len(ids) - moved, "moved": moved}
+
+    def _bounds(self, company_id: str, environment: str) -> tuple[int, int]:
+        row = self.conn.execute(
+            "SELECT COALESCE(MIN(position), 0) AS low, COALESCE(MAX(position), 0) AS high "
+            "FROM xml_queue WHERE company_id=? AND environment=?",
+            (company_id, environment),
+        ).fetchone()
+        return row["low"], row["high"]
+
+    def count(self, company_id: str, environment: str) -> int:
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM xml_queue WHERE company_id=? AND environment=?",
+            (company_id, environment),
+        ).fetchone()[0]
+
+    def ids(self, company_id: str, environment: str) -> set[int]:
+        return {
+            row["invoice_id"] for row in self.conn.execute(
+                "SELECT invoice_id FROM xml_queue WHERE company_id=? AND environment=?",
+                (company_id, environment),
+            )
+        }
+
+    def items(self, company_id: str, environment: str, limit: int | None = None):
+        """Pozycje z danymi faktury: najpierw wlasnie pobierana, potem wg kolejnosci."""
+        q = (
+            "SELECT q.invoice_id, q.state, q.position, d.ksef_number, d.invoice_number, "
+            "d.seller_name, d.issue_date, d.storage_date, d.gross "
+            "FROM xml_queue q JOIN downloaded_invoices d ON d.id = q.invoice_id "
+            "WHERE q.company_id=? AND q.environment=? "
+            "ORDER BY q.state = 'downloading' DESC, q.position, q.invoice_id"
+        )
+        params: list = [company_id, environment]
+        if limit is not None:
+            q += " LIMIT ?"
+            params.append(limit)
+        return self.conn.execute(q, params).fetchall()
+
+    def claim_next(self, company_id: str, environment: str) -> sqlite3.Row | None:
+        """Oznacza pierwsza czekajaca pozycje jako pobierana i ja zwraca."""
+        with self.conn:
+            row = self.conn.execute(
+                "SELECT q.invoice_id, d.ksef_number FROM xml_queue q "
+                "JOIN downloaded_invoices d ON d.id = q.invoice_id "
+                "WHERE q.company_id=? AND q.environment=? AND q.state='queued' "
+                "ORDER BY q.position, q.invoice_id LIMIT 1",
+                (company_id, environment),
+            ).fetchone()
+            if row is not None:
+                self.conn.execute(
+                    "UPDATE xml_queue SET state='downloading' WHERE invoice_id=?",
+                    (row["invoice_id"],),
+                )
+        return row
+
+    def release(self, invoice_id: int) -> None:
+        """Pobranie sie nie odbylo (limit) - pozycja wraca na swoje miejsce w kolejce."""
+        with self.conn:
+            self.conn.execute(
+                "UPDATE xml_queue SET state='queued' WHERE invoice_id=?", (invoice_id,)
+            )
+
+    def release_all(self) -> None:
+        """Po restarcie nic nie jest w trakcie pobierania."""
+        with self.conn:
+            self.conn.execute("UPDATE xml_queue SET state='queued' WHERE state='downloading'")
+
+    def remove(self, invoice_id: int) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM xml_queue WHERE invoice_id=?", (invoice_id,))
+
+    def remove_queued(self, company_id: str, environment: str, invoice_id: int) -> bool:
+        """Usuwa czekajaca pozycje; wlasnie pobieranej nie da sie juz cofnac."""
+        with self.conn:
+            cur = self.conn.execute(
+                "DELETE FROM xml_queue WHERE invoice_id=? AND company_id=? AND environment=? "
+                "AND state='queued'",
+                (invoice_id, company_id, environment),
+            )
+        return cur.rowcount > 0
+
+    def purge(self, company_id: str, environment: str) -> int:
+        """Czysci kolejke firmy. Trwajace pobranie dobiegnie konca, kolejne juz nie rusza."""
+        with self.conn:
+            cur = self.conn.execute(
+                "DELETE FROM xml_queue WHERE company_id=? AND environment=?",
+                (company_id, environment),
+            )
+        return cur.rowcount
+
+    def move(self, company_id: str, environment: str, invoice_id: int, where: str) -> bool:
+        """Zmienia miejsce czekajacej pozycji: top / up / down / bottom."""
+        scope = (company_id, environment)
+        with self.conn:
+            current = self.conn.execute(
+                "SELECT position FROM xml_queue WHERE invoice_id=? AND company_id=? "
+                "AND environment=? AND state='queued'",
+                (invoice_id, *scope),
+            ).fetchone()
+            if current is None:
+                return False
+            position = current["position"]
+            if where in ("top", "bottom"):
+                low, high = self._bounds(*scope)
+                target = low - 1 if where == "top" else high + 1
+                self.conn.execute(
+                    "UPDATE xml_queue SET position=? WHERE invoice_id=?", (target, invoice_id)
+                )
+                return True
+            if where not in ("up", "down"):
+                return False
+            compare, order = ("<", "DESC") if where == "up" else (">", "ASC")
+            neighbour = self.conn.execute(
+                "SELECT invoice_id, position FROM xml_queue WHERE company_id=? AND environment=? "
+                f"AND state='queued' AND position {compare} ? ORDER BY position {order} LIMIT 1",
+                (*scope, position),
+            ).fetchone()
+            if neighbour is None:
+                return False
+            self.conn.execute(
+                "UPDATE xml_queue SET position=? WHERE invoice_id=?",
+                (neighbour["position"], invoice_id),
+            )
+            self.conn.execute(
+                "UPDATE xml_queue SET position=? WHERE invoice_id=?",
+                (position, neighbour["invoice_id"]),
+            )
+        return True
+
+
 class SyncStateRepo:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
