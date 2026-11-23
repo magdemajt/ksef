@@ -109,13 +109,19 @@ def add_company(company_id: str, fields: dict, path: Path | None = None) -> None
     _write_atomic(path, doc)
 
 
+# pola opcjonalne, ktore formularz moze wyczyscic (puste = wartosc domyslna)
+CLEARABLE_FIELDS = (
+    "address_line1", "address_line2", "regon", "ksef_cert_path", "offline_target_id",
+)
+
+
 def update_company(
     company_id: str,
     fields: dict,
     writes_enabled: bool | None = None,
     path: Path | None = None,
 ) -> None:
-    """Aktualizuje istniejaca firme (tylko przekazane, niepuste pola).
+    """Aktualizuje istniejaca firme (przekazane pola; puste czysci tylko pola opcjonalne).
 
     writes_enabled przekazywane osobno i jawnie - to bramka bezposrednich
     INSERT-ow do bazy Optimy (etap M5), nie zwykle pole formularza.
@@ -129,6 +135,9 @@ def update_company(
         value = fields.get(field)
         if value not in (None, ""):
             companies[company_id][field] = value
+        elif value == "" and field in CLEARABLE_FIELDS and field in companies[company_id]:
+            # wyczyszczone pole formularza ma zniknac, a nie zostac ze stara wartoscia
+            del companies[company_id][field]
     if writes_enabled is not None:
         companies[company_id]["writes_enabled"] = writes_enabled
     _validate(doc)

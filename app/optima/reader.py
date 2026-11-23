@@ -16,6 +16,7 @@ import time
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
+from app.optima.db import fetch_all
 from app.optima.models import Contractor, SalesInvoice, SalesLine
 
 logger = logging.getLogger(__name__)
@@ -280,10 +281,10 @@ class SalesReader:
         if not bna_col or account_row[bna_col] is None:
             return None
         try:
-            cur = self.conn.cursor()
-            cur.execute("SELECT * FROM CDN.BnkNazwy WHERE BNa_BNaId = ?", (account_row[bna_col],))
-            cols = [d[0] for d in cur.description]
-            row = cur.fetchone()
+            cols, rows = fetch_all(
+                self.conn, "SELECT * FROM CDN.BnkNazwy WHERE BNa_BNaId = ?", (account_row[bna_col],)
+            )
+            row = rows[0] if rows else None
         except Exception:
             logger.exception("Odczyt nazwy banku nie powiodl sie")
             return None

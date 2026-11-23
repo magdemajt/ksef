@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -13,6 +15,19 @@ from app.secrets import SecretStore
 from app.web.deps import AppContext, ctx
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _save_failed(context: AppContext, exc: Exception) -> str:
+    """Blad po zapisie config.toml (zwykle zapis sekretu): aplikacja ma dzialac na tym, co w pliku.
+
+    Bez przeladowania plik mowilby jedno (np. srodowisko prod), a dzialajaca aplikacja drugie -
+    az do nastepnego, niezwiazanego zapisu albo restartu.
+    """
+    logger.exception("Zapis ustawien nie powiodl sie w polowie")
+    with contextlib.suppress(Exception):
+        context.reload()
+    return f"Konfiguracja zapisana, ale reszta zapisu (np. haslo/token) nie powiodla sie: {exc}"
 
 
 def _diagnose_view(context: AppContext, company_id: str) -> dict | None:
@@ -148,6 +163,8 @@ def save_ksef_config(
         return _render(request, context, c, "Konfiguracja zapisana i przeladowana", True)
     except configstore.ConfigStoreError as exc:
         return _render(request, context, c, str(exc), False)
+    except Exception as exc:  # noqa: BLE001 - np. magazyn hasel systemu odmowil zapisu
+        return _render(request, context, c, _save_failed(context, exc), False)
 
 
 # -- dodawanie firmy --
@@ -209,6 +226,8 @@ def add_company(
         )
     except configstore.ConfigStoreError as exc:
         return _render(request, context, c, str(exc), False)
+    except Exception as exc:  # noqa: BLE001 - np. magazyn hasel systemu odmowil zapisu
+        return _render(request, context, c, _save_failed(context, exc), False)
 
 
 # -- edycja istniejacej firmy --
@@ -299,6 +318,8 @@ def save_company(
         return _render_edit(request, context, c, edit_id, "Zmiany zapisane", True)
     except configstore.ConfigStoreError as exc:
         return _render_edit(request, context, c, edit_id, str(exc), False)
+    except Exception as exc:  # noqa: BLE001 - np. magazyn hasel systemu odmowil zapisu
+        return _render_edit(request, context, c, edit_id, _save_failed(context, exc), False)
 
 
 @router.post("/settings/company/{edit_id}/optima-address")

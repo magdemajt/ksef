@@ -14,6 +14,7 @@ FA3_NAMESPACE = "http://crd.gov.pl/wzor/2025/06/25/13775/"
 MAX_INVOICE_BYTES = 1_000_000  # limit KSeF dla faktury bez zalacznika
 
 _schema_lock = threading.Lock()
+_validate_lock = threading.Lock()
 _schema: etree.XMLSchema | None = None
 
 
@@ -83,7 +84,11 @@ def validate(xml: bytes) -> list[str]:
         return errors
 
     schema = _load_schema()
-    if not schema.validate(doc):
-        for err in schema.error_log:
-            errors.append(f"XSD linia {err.line}: {err.message}")
+    # error_log nalezy do wspoldzielonego obiektu schematu: rownolegla walidacja innej faktury
+    # (podglad w przegladarce obok watku wysylki) czyscilaby go, zanim zdazymy go przeczytac -
+    # niepoprawna faktura wracalaby wtedy bez bledow
+    with _validate_lock:
+        if not schema.validate(doc):
+            found = [f"XSD linia {err.line}: {err.message}" for err in schema.error_log]
+            errors.extend(found or ["Dokument niezgodny ze schematem FA(3) (brak szczegolow)"])
     return errors

@@ -106,11 +106,13 @@ class DownloadService:
         cursor = start_cursor
         now = datetime.now(UTC)
         stats = {"pages": 0, "new": 0, "known": 0, "errors": 0}
+        page_offset = 0
 
         while stats["pages"] < max_pages:
             window_end = min(cursor + timedelta(days=MAX_RANGE_DAYS), now)
+            page_start = cursor
             page = self.gateway.query_purchase_metadata(
-                date_from=cursor, date_to=window_end, page_offset=0
+                date_from=cursor, date_to=window_end, page_offset=page_offset
             )
             stats["pages"] += 1
             newest_seen: datetime | None = None
@@ -128,12 +130,16 @@ class DownloadService:
 
             # cala strona utrwalona -> mozna przesunac kursor
             if newest_seen is not None:
-                cursor = newest_seen
+                cursor = max(cursor, newest_seen)
                 self._advance_cursor(cursor)
             elif not page.invoices and window_end < now:
                 # puste okno w przeszlosci - przeskocz je
                 cursor = window_end
                 self._advance_cursor(cursor)
+
+            # Kursor to data, wiec strona pelna faktur o tej samej dacie przyjecia go nie rusza -
+            # to samo zapytanie zwracaloby ja bez konca. Wtedy bierzemy kolejna strone okna.
+            page_offset = page_offset + 1 if page.has_more and cursor == page_start else 0
 
             if not (page.has_more or page.is_truncated):
                 if window_end >= now:
@@ -227,13 +233,28 @@ class DownloadService:
         polaczenia - faktura zostaje w kolejce) albo "failed" (blad zapisany przy fakturze).
         """
         xml_path = self.invoice_store / self.company_id / f"{ksef_number}.xml"
+        have_file = xml_path.exists() and xml_path.stat().st_size > 0
+        if not have_file:
+            try:
+                self.gateway.ensure_login()
+            except Exception as exc:  # noqa: BLE001 - brak sekretu, zly token, brak sieci...
+                logger.warning("Logowanie do KSeF firmy %s nie powiodlo sie: %s", self.company_id, exc)
+                self._block_downloads(
+                    datetime.now(UTC) + AUTH_BACKOFF,
+                    f"logowanie do KSeF nie powiodlo sie: {exc}"[:200],
+                )
+                return "limited"
         try:
-            if xml_path.exists() and xml_path.stat().st_size:
-                xml = xml_path.read_bytes()  # plik z wczesniejszej, przerwanej proby
+            if have_file:
+                xml = xml_path.read_bytes()  # plik z wczesniejszej proby
             else:
                 xml = self.gateway.download_invoice(ksef_number)
                 xml_path.parent.mkdir(parents=True, exist_ok=True)
-                xml_path.write_bytes(xml)
+                # zapis przez plik tymczasowy: przerwany zapis nie zostawia urwanego XML,
+                # ktory przy nastepnej probie zostalby wziety za pobrana fakture
+                partial = xml_path.with_suffix(".xml.part")
+                partial.write_bytes(xml)
+                partial.replace(xml_path)
         except RateLimitExceeded as exc:
             self._block_downloads(exc.resets_at)
             return "limited"

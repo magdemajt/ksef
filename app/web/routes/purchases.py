@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 
-from app.fa3.parser import parse_invoice
+from app.fa3.parser import ParseError, parse_invoice
 from app.ksef.downloader import (
     blocked_reason,
     blocked_until,
@@ -396,12 +396,16 @@ def purchases_export(
     invoices = []
     for invoice_id in ids:
         row = context.downloads.get(invoice_id)
-        if row is None or row["company_id"] != c:
-            continue
+        if row is None or row["company_id"] != c or row["environment"] != env:
+            continue  # takze karta otwarta przed zmiana srodowiska (test -> prod)
         if not row["xml_path"] or not Path(row["xml_path"]).exists():
             context.downloads.set_status(invoice_id, "error", error_detail="Brak pliku XML")
             continue
-        parsed = parse_invoice(Path(row["xml_path"]).read_bytes(), row["ksef_number"])
+        try:
+            parsed = parse_invoice(Path(row["xml_path"]).read_bytes(), row["ksef_number"])
+        except ParseError as exc:
+            context.downloads.set_status(invoice_id, "error", error_detail=str(exc)[:1000])
+            continue
         invoices.append((row, parsed))
 
     if mode == "xml":
@@ -423,27 +427,38 @@ def purchases_export(
                 sync_result=f"Eksport XML przerwany - brak polaczenia z baza Optimy: {exc}",
             )
         to_export, contractors, skipped = [], {}, 0
-        for row, parsed in invoices:
-            invoice_id = row["id"]
-            if ksef_number_known(read_conn, row["ksef_number"]) or vat_register_has(
-                read_conn, parsed.seller_nip, parsed.invoice_number
-            ):
-                context.downloads.set_status(invoice_id, "already_in_optima")
-                skipped += 1
-                continue
-            if (parsed.currency or "PLN").upper() != "PLN":
-                context.downloads.set_status(
-                    invoice_id, "error",
-                    error_detail=f"Waluta {parsed.currency} - eksport XML obsluguje tylko PLN",
-                )
-                skipped += 1
-                continue
-            nip = normalize_nip(parsed.seller_nip)
-            if nip not in contractors:
-                contractor = find_by_nip(read_conn, nip)
-                if contractor is not None:
-                    contractors[nip] = contractor
-            to_export.append((row, parsed))
+        try:
+            for row, parsed in invoices:
+                invoice_id = row["id"]
+                if ksef_number_known(read_conn, row["ksef_number"]) or vat_register_has(
+                    read_conn, parsed.seller_nip, parsed.invoice_number
+                ):
+                    context.downloads.set_status(invoice_id, "already_in_optima")
+                    skipped += 1
+                    continue
+                if (parsed.currency or "PLN").upper() != "PLN":
+                    context.downloads.set_status(
+                        invoice_id, "error",
+                        error_detail=f"Waluta {parsed.currency} - eksport XML obsluguje tylko PLN",
+                    )
+                    skipped += 1
+                    continue
+                nip = normalize_nip(parsed.seller_nip)
+                if nip not in contractors:
+                    contractor = find_by_nip(read_conn, nip)
+                    if contractor is not None:
+                        contractors[nip] = contractor
+                to_export.append((row, parsed))
+            payment_forms = payment_form_guids(read_conn) if to_export else {}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Eksport XML: odczyt z bazy Optimy nie powiodl sie")
+            return _render_list(
+                request, context, c,
+                sync_result=f"Eksport XML przerwany - blad odczytu z bazy Optimy: {exc}",
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                read_conn.close()
         if not to_export:
             return _render_list(
                 request, context, c,
@@ -451,7 +466,7 @@ def purchases_export(
             )
         xml = export_as_xml(
             [p for _, p in to_export], company.purchase_register, company.offline_target_id,
-            contractors=contractors, payment_form_ids=payment_form_guids(read_conn),
+            contractors=contractors, payment_form_ids=payment_forms,
         )
         # Status zostaje "new" (import w Optimie jest reczny i moze sie nie udac);
         # exported_at oznacza tylko, ze faktura trafila do pliku - lista pokazuje "w pliku XML".
@@ -471,45 +486,57 @@ def purchases_export(
         )
 
     if mode == "direct":
-        write_conn = context.optima.write_connection(company)
-        read_conn = context.optima.read_connection(company)
-        spec_path = context.cfg.state.invoice_store.parent / f"insert_spec-{c}.json"
-        writer = PurchaseWriter(write_conn, company, spec_path)
-        for row, parsed in invoices:
-            invoice_id = row["id"]
-            # deduplikacja z natywnym obiegiem KSeF Optimy
-            if ksef_number_known(read_conn, row["ksef_number"]):
-                context.downloads.set_status(invoice_id, "already_in_optima")
-                continue
-            if vat_register_has(read_conn, parsed.seller_nip, parsed.invoice_number):
-                context.downloads.set_status(
-                    invoice_id, "already_in_optima",
-                    error_detail="Wpis (NIP, numer) juz istnieje w rejestrze VAT",
-                )
-                continue
-            acq = (row["storage_date"] or "")[:10]
-            acq_date = date.fromisoformat(acq) if acq else datetime.now(UTC).date()
-            try:
-                van_id = writer.export_direct(parsed, acq_date)
-                context.downloads.set_status(
-                    invoice_id, "exported", van_id=van_id,
-                    exported_at=datetime.now(UTC).isoformat(),
-                )
-                context.audit.log(
-                    "purchase_exported", c, "purchase_invoice", row["ksef_number"], env,
-                    {"van_id": van_id, "invoice_number": parsed.invoice_number,
-                     "gross": str(parsed.total_gross)},
-                )
-            except ContractorMissingError as exc:
-                context.downloads.set_status(
-                    invoice_id, "needs_contractor", error_detail=str(exc)
-                )
-            except (WriteBlockedError, VerificationError) as exc:
-                context.downloads.set_status(invoice_id, "error", error_detail=str(exc))
-            except Exception as exc:  # noqa: BLE001
-                context.downloads.set_status(
-                    invoice_id, "error", error_detail=f"Blad INSERT: {exc}"
-                )
+        write_conn = read_conn = None
+        try:
+            write_conn = context.optima.write_connection(company)
+            read_conn = context.optima.read_connection(company)
+            spec_path = context.cfg.state.invoice_store.parent / f"insert_spec-{c}.json"
+            writer = PurchaseWriter(write_conn, company, spec_path)
+            for row, parsed in invoices:
+                invoice_id = row["id"]
+                # deduplikacja z natywnym obiegiem KSeF Optimy
+                if ksef_number_known(read_conn, row["ksef_number"]):
+                    context.downloads.set_status(invoice_id, "already_in_optima")
+                    continue
+                if vat_register_has(read_conn, parsed.seller_nip, parsed.invoice_number):
+                    context.downloads.set_status(
+                        invoice_id, "already_in_optima",
+                        error_detail="Wpis (NIP, numer) juz istnieje w rejestrze VAT",
+                    )
+                    continue
+                acq = (row["storage_date"] or "")[:10]
+                acq_date = date.fromisoformat(acq) if acq else datetime.now(UTC).date()
+                try:
+                    van_id = writer.export_direct(parsed, acq_date)
+                    context.downloads.set_status(
+                        invoice_id, "exported", van_id=van_id,
+                        exported_at=datetime.now(UTC).isoformat(),
+                    )
+                    context.audit.log(
+                        "purchase_exported", c, "purchase_invoice", row["ksef_number"], env,
+                        {"van_id": van_id, "invoice_number": parsed.invoice_number,
+                         "gross": str(parsed.total_gross)},
+                    )
+                except ContractorMissingError as exc:
+                    context.downloads.set_status(
+                        invoice_id, "needs_contractor", error_detail=str(exc)
+                    )
+                except (WriteBlockedError, VerificationError) as exc:
+                    context.downloads.set_status(invoice_id, "error", error_detail=str(exc))
+                except Exception as exc:  # noqa: BLE001
+                    context.downloads.set_status(
+                        invoice_id, "error", error_detail=f"Blad INSERT: {exc}"
+                    )
+        except Exception as exc:  # noqa: BLE001 - brak polaczenia / hasla SQL, blad odczytu
+            logger.exception("Zapis do rejestru VAT: blad polaczenia z baza Optimy")
+            return _render_list(
+                request, context, c,
+                sync_result=f"Zapis do rejestru VAT przerwany - blad polaczenia z baza Optimy: {exc}",
+            )
+        finally:
+            for conn in (write_conn, read_conn):
+                with contextlib.suppress(Exception):
+                    conn.close()
         return RedirectResponse(_list_url(request, c), status_code=303)
 
     raise HTTPException(400, f"Nieznany tryb eksportu: {mode}")
@@ -522,7 +549,7 @@ def purchase_detail(
     row = context.downloads.get(invoice_id)
     if row is None:
         raise HTTPException(404, "Nie znaleziono faktury")
-    if row["company_id"] != c:
+    if row["company_id"] != c or row["environment"] != context.cfg.ksef.environment:
         # przelaczenie firmy na podgladzie faktury - wracamy do listy wybranej firmy
         return RedirectResponse(f"/purchases?c={c}", status_code=303)
     parsed = None
@@ -544,7 +571,10 @@ def purchase_detail(
 @router.get("/purchases/{invoice_id}/xml")
 def purchase_xml(invoice_id: int, c: str, context: AppContext = Depends(ctx)):
     row = context.downloads.get(invoice_id)
-    if row is None or row["company_id"] != c or not row["xml_path"]:
+    if (
+        row is None or row["company_id"] != c or not row["xml_path"]
+        or row["environment"] != context.cfg.ksef.environment
+    ):
         raise HTTPException(404, "Brak XML")
     path = Path(row["xml_path"])
     if not path.exists():

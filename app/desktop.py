@@ -159,6 +159,33 @@ def selftest() -> int:
     return 0
 
 
+def logging_config(log_path: Path) -> dict:
+    """Logowanie wersji okienkowej: konsola + plik (rotowany) z logami aplikacji i bledami zadan.
+
+    Bez pliku komunikat "patrz log" nie mial pokrycia - po zamknieciu okna konsoli slad ginal.
+    """
+    import copy
+
+    from uvicorn.config import LOGGING_CONFIG
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    config = copy.deepcopy(LOGGING_CONFIG)
+    config["formatters"]["plain"] = {
+        "format": "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    }
+    config["handlers"]["file"] = {
+        "class": "logging.handlers.RotatingFileHandler", "filename": str(log_path),
+        "maxBytes": 2_000_000, "backupCount": 3, "encoding": "utf-8", "formatter": "plain",
+    }
+    config["handlers"]["console"] = {
+        "class": "logging.StreamHandler", "stream": "ext://sys.stderr", "formatter": "plain",
+    }
+    # bledy zadan HTTP (traceback) loguje "uvicorn.error", ktory przekazuje do "uvicorn"
+    config["loggers"]["uvicorn"]["handlers"] = ["default", "file"]
+    config["root"] = {"level": "INFO", "handlers": ["console", "file"]}
+    return config
+
+
 def main() -> None:
     import uvicorn
 
@@ -173,12 +200,23 @@ def main() -> None:
     os.environ[CONFIG_ENV_VAR] = str(cfg_path)
     print(f"Konfiguracja: {cfg_path}" + ("  (utworzona - uzupelnij dane w GUI)" if first_run else ""))
 
-    cfg = load_config(cfg_path)
+    try:
+        cfg = load_config(cfg_path)
+    except Exception as exc:  # noqa: BLE001 - np. recznie zepsuty config.toml
+        print(f"BLAD: nie mozna wczytac konfiguracji {cfg_path}:\n{exc}")
+        if sys.stdin is not None and sys.stdin.isatty():
+            input("Nacisnij Enter, aby zamknac...")  # okno konsoli nie znika od razu
+        raise SystemExit(1) from exc
     url = f"http://{cfg.web.host}:{cfg.web.port}" + ("/setup" if first_run else "/")
+    log_path = cfg.state.sqlite_path.parent / "ksef-bridge.log"
+    print(f"Log: {log_path}")
 
     threading.Timer(1.5, lambda: webbrowser.open(url)).start()
     print(f"GUI: {url}  (Ctrl+C zatrzymuje aplikacje)")
-    uvicorn.run(create_app(cfg), host=cfg.web.host, port=cfg.web.port, log_level="info")
+    uvicorn.run(
+        create_app(cfg), host=cfg.web.host, port=cfg.web.port, log_level="info",
+        log_config=logging_config(log_path),
+    )
 
 
 if __name__ == "__main__":

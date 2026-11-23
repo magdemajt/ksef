@@ -19,6 +19,19 @@ class MappingError(ValueError):
     """Faktura nie kwalifikuje sie do automatycznego zmapowania na FA(3)."""
 
 
+def polish_nip(raw: str | None) -> str | None:
+    """10 cyfr polskiego NIP albo None.
+
+    Dopuszcza spacje, kreski i prefiks PL. Inny prefiks literowy (SK2021234567) to numer
+    zagraniczny - samo wyciecie cyfr zrobiloby z niego NIP obcej polskiej firmy i faktura
+    trafilaby w KSeF do niej.
+    """
+    text = (raw or "").upper().replace(" ", "").replace("-", "")
+    if text.startswith("PL"):
+        text = text[2:]
+    return text if len(text) == 10 and text.isascii() and text.isdigit() else None
+
+
 # TrE_Flaga w Optimie: status stawki VAT pozycji.
 # Wartosci wstepne wg dokumentacji spolecznosci; `ksef-bridge diagnose` wypisuje
 # rzeczywiste kombinacje (stawka, flaga) z bazy - map uzupelniamy po weryfikacji na M2.
@@ -173,8 +186,8 @@ def map_invoice(
         raise MappingError(
             f"Nabywca z NIP {inv.buyer.nip_kraj}{inv.buyer.nip} - sprzedaz zagraniczna poza zakresem v1"
         )
-    buyer_nip = inv.buyer.nip_normalized
-    if len(buyer_nip) != 10:
+    buyer_nip = polish_nip(inv.buyer.nip)
+    if buyer_nip is None:
         raise MappingError(
             f"NIP nabywcy {inv.buyer.nip!r} nie jest 10-cyfrowym polskim NIP "
             f"(sprzedaz zagraniczna/konsumencka poza zakresem v1)"

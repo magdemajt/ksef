@@ -96,6 +96,11 @@ class AppContext:
         return next(iter(self.cfg.companies))
 
     def gateway(self, company_id: str) -> KsefGateway:
+        env = self.cfg.ksef.environment
+        cached = self._gateways.get(company_id)
+        if cached is not None and cached.env != env:
+            # zapis ustawien w trakcie pracy kolejki mogl zostawic klienta starego srodowiska
+            self._gateways.pop(company_id, None)
         if company_id not in self._gateways:
             self._gateways[company_id] = KsefGateway(
                 company_id,

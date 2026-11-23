@@ -50,11 +50,13 @@ class RateLimiter:
 
     def remaining(self, company_id: str, endpoint: str) -> int:
         limit, _ = LIMITS[endpoint]
-        return max(0, limit - len(self._window_rows(company_id, endpoint)))
+        with self.conn:  # _window_rows usuwa stare wpisy - bez commit transakcja zostalaby otwarta
+            return max(0, limit - len(self._window_rows(company_id, endpoint)))
 
     def resets_at(self, company_id: str, endpoint: str) -> datetime | None:
         _, window = LIMITS[endpoint]
-        rows = self._window_rows(company_id, endpoint)
+        with self.conn:
+            rows = self._window_rows(company_id, endpoint)
         if not rows:
             return None
         return datetime.fromisoformat(rows[0]) + window

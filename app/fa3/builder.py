@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from lxml import etree
 
-from app.fa3.mapper import RATE_BUCKETS, Fa3Invoice
+from app.fa3.mapper import RATE_BUCKETS, Fa3Invoice, MappingError
 
 NS = "http://crd.gov.pl/wzor/2025/06/25/13775/"
 E = "{%s}" % NS
@@ -16,7 +16,12 @@ E = "{%s}" % NS
 def _sub(parent: etree._Element, tag: str, text: str | Decimal | int | None = None, **attrs):
     el = etree.SubElement(parent, E + tag, attrib=attrs or None)
     if text is not None:
-        el.text = str(text)
+        try:
+            el.text = str(text)
+        except ValueError as exc:  # znaki sterujace, niesparowane surogaty (takze UnicodeError)
+            raise MappingError(
+                f"Pole {tag} zawiera znak niedozwolony w XML: {str(text)[:60]!r} - popraw w Optimie"
+            ) from exc
     return el
 
 

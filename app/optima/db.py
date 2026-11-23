@@ -7,6 +7,7 @@ Dwa loginy (zasada najmniejszych uprawnien):
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 
@@ -16,19 +17,41 @@ from app.secrets import SecretStore
 logger = logging.getLogger(__name__)
 
 
+def _braced(value: str) -> str:
+    """Wartosc w klamrach ODBC: srednik lub klamra w hasle nie rozbija lancucha polaczenia."""
+    return "{" + value.replace("}", "}}") + "}"
+
+
 def _connection_string(
     server: str, database: str, user: str, password: str, trust_cert: bool
 ) -> str:
     parts = [
         f"Server={server}",
         f"Database={database}",
-        f"UID={user}",
-        f"PWD={password}",
+        f"UID={_braced(user)}",
+        f"PWD={_braced(password)}",
         "Encrypt=yes",
     ]
     if trust_cert:
         parts.append("TrustServerCertificate=yes")
     return ";".join(parts)
+
+
+def fetch_all(conn, sql: str, params: tuple = ()) -> tuple[list[str], list]:
+    """Wykonuje zapytanie, czyta CALY wynik i zamyka kursor. Zwraca (kolumny, wiersze).
+
+    Polaczenie z SQL Server obsluguje jeden otwarty wynik naraz. Kursor zostawiony z
+    nieprzeczytanymi wierszami (np. fetchone() przy kilku pasujacych kartach kontrahenta)
+    blokuje kazde nastepne zapytanie: "Connection is busy with results for another command".
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, params)
+        cols = [d[0] for d in cur.description or []]
+        return cols, list(cur.fetchall())
+    finally:
+        with contextlib.suppress(Exception):
+            cur.close()
 
 
 class OptimaDb:

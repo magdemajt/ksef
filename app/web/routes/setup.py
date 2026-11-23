@@ -85,10 +85,18 @@ def setup_sql(
     except configstore.ConfigStoreError as exc:
         return _render(request, context, str(exc), False, step=1)
     store = SecretStore()
-    if sql_read_password:
-        store.set("sql-read-password", sql_read_password)
-    if sql_write_password:
-        store.set("sql-write-password", sql_write_password)
+    try:
+        if sql_read_password:
+            store.set("sql-read-password", sql_read_password)
+        if sql_write_password:
+            store.set("sql-write-password", sql_write_password)
+    except Exception as exc:  # noqa: BLE001 - magazyn hasel systemu odmowil zapisu
+        context.reload()  # config.toml jest juz zapisany - aplikacja ma dzialac na nim
+        return _render(
+            request, context,
+            f"Serwer zapisany, ale hasla SQL nie udalo sie zapisac w magazynie hasel: {exc}",
+            False, step=1,
+        )
     context.reload()
     context.audit.log("setup_sql_saved", details={"server": optima_server.strip()})
 
@@ -160,7 +168,14 @@ def setup_company(
         "lp_numbering": lp_numbering,
     }
     try:
-        if company_id in context.cfg.companies:
+        existing = context.cfg.companies.get(company_id)
+        if existing is not None and existing.nip != PLACEHOLDER_NIP:
+            # nadpisanie podmieniloby baze i NIP pod stanem (statusy wysylki, zakupy) tej firmy
+            raise configstore.ConfigStoreError(
+                f"Firma o identyfikatorze {company_id!r} juz istnieje - zmien ja w Ustawieniach "
+                f"albo podaj inny identyfikator"
+            )
+        if existing is not None:
             # uzupelnienie firmy-placeholdera utworzonej przy pierwszym starcie
             configstore.update_company(company_id, fields)
             action = "setup_company_updated"

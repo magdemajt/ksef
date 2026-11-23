@@ -51,6 +51,26 @@ class SentRepo:
             )
         return row["id"]
 
+    def reset_interrupted(self) -> int:
+        """Po restarcie: wysylki przerwane zamknieciem programu przestaja wisiec w kolejce.
+
+        Bez tego faktura zostawala "w kolejce"/"wyslano" na zawsze (bez pola wyboru na liscie).
+        """
+        with self.conn:
+            queued = self.conn.execute(
+                "UPDATE sent_invoices SET status='error', updated_at=?, error_detail="
+                "'Wysylka przerwana (program zamkniety) przed wyslaniem do KSeF - mozna wyslac "
+                "ponownie' WHERE status='queued'",
+                (_now(),),
+            ).rowcount
+            sent = self.conn.execute(
+                "UPDATE sent_invoices SET status='error', updated_at=?, error_detail="
+                "'Program zamkniety w trakcie wysylki - faktura mogla trafic do KSeF, sprawdz "
+                "w KSeF przed ponowna wysylka' WHERE status='sent'",
+                (_now(),),
+            ).rowcount
+        return queued + sent
+
     def accepted_numbers(self, company_id: str, environment: str) -> set[str]:
         rows = self.conn.execute(
             "SELECT numer_pelny FROM sent_invoices "
@@ -82,17 +102,22 @@ class BatchRepo:
 
     def consume(self, confirm_token: str) -> sqlite3.Row | None:
         """Zwraca partie i oznacza jako zuzyta. None gdy nieznana/zuzyta/przeterminowana."""
-        row = self.conn.execute(
-            "SELECT * FROM pending_batches WHERE confirm_token=?", (confirm_token,)
-        ).fetchone()
-        if row is None or row["consumed_at"] is not None:
-            return None
-        if datetime.fromisoformat(row["expires_at"]) < datetime.now(UTC):
-            return None
         with self.conn:
-            self.conn.execute(
-                "UPDATE pending_batches SET consumed_at=? WHERE id=?", (_now(), row["id"])
+            row = self.conn.execute(
+                "SELECT * FROM pending_batches WHERE confirm_token=?", (confirm_token,)
+            ).fetchone()
+            if row is None or row["consumed_at"] is not None:
+                return None
+            if datetime.fromisoformat(row["expires_at"]) < datetime.now(UTC):
+                return None
+            # warunek consumed_at IS NULL: dwa rownoczesne potwierdzenia (podwojne klikniecie)
+            # nie moga oba dostac tej samej partii - wysylka poszlaby dwa razy
+            cur = self.conn.execute(
+                "UPDATE pending_batches SET consumed_at=? WHERE id=? AND consumed_at IS NULL",
+                (_now(), row["id"]),
             )
+            if cur.rowcount != 1:
+                return None
         return row
 
 

@@ -323,6 +323,14 @@ def _offline_record(section, inv, register, contractors, payment_form_ids) -> No
 # -- sciezka 2: bezposredni INSERT --
 
 
+def _iso_date(text: str | None) -> date | None:
+    """Data z faktury (YYYY-MM-DD) jako obiekt date; napis SQL Server czytalby wg DATEFORMAT."""
+    try:
+        return date.fromisoformat((text or "")[:10])
+    except ValueError:
+        return None
+
+
 class PurchaseWriter:
     def __init__(self, conn, company: CompanyConfig, insert_spec_path: Path):
         self.conn = conn
@@ -403,7 +411,7 @@ class PurchaseWriter:
             "VaN_DataOpe": issue,
             "VaN_RokMies": rokmies,
             "VaN_DeklRokMies": rokmies,
-            "VaN_Termin": inv.payment_due or acq,
+            "VaN_Termin": _iso_date(inv.payment_due) or acq,
             "VaN_PodmiotTyp": 1,
             "VaN_PodID": contractor.knt_id,
             "VaN_KntNazwa1": inv.seller_name[:200],
@@ -454,7 +462,7 @@ class PurchaseWriter:
             "BZd_PodmiotTyp": 1,
             "BZd_PodmiotID": contractor.knt_id,
             "BZd_Kwota": inv.total_gross,
-            "BZd_Termin": inv.payment_due or datetime.now(UTC).date(),
+            "BZd_Termin": _iso_date(inv.payment_due) or datetime.now(UTC).date(),
         }
         for col, literal in spec_cols.get("literals", {}).items():
             values.setdefault(col, literal)

@@ -107,3 +107,19 @@ class TestUpdateCompany:
     def test_rejects_unknown_company(self, cfg_file):
         with pytest.raises(configstore.ConfigStoreError, match="Nieznana"):
             configstore.update_company("firma_x", {"name": "X"}, path=cfg_file)
+
+
+class TestClearingFields:
+    def test_emptied_optional_field_is_removed_not_kept(self, cfg_file):
+        configstore.update_company(
+            "firma_a", {"regon": "123456785", "address_line2": "00-001 Warszawa",
+                        "offline_target_id": "KSIEG"}, path=cfg_file,
+        )
+        configstore.update_company(
+            "firma_a", {"regon": "", "address_line2": "", "offline_target_id": "NOWY",
+                        "name": ""}, path=cfg_file,
+        )
+        company = tomlkit.parse(cfg_file.read_text())["companies"]["firma_a"]
+        assert "regon" not in company and "address_line2" not in company
+        assert company["offline_target_id"] == "NOWY"
+        assert company["name"] == "Firma A"  # pole wymagane: puste znaczy "bez zmian"

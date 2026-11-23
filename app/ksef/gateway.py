@@ -103,6 +103,10 @@ class KsefGateway:
             self.reauthenticate()
             return call(self.authed())
 
+    def ensure_login(self) -> None:
+        """Loguje do KSeF, jesli trzeba. Rzuca, gdy sie nie da (brak sekretu, zly token, siec)."""
+        self.authed()
+
     def reauthenticate(self) -> None:
         self._authed = None
         self.authed()

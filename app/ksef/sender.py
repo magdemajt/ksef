@@ -194,6 +194,7 @@ class SendService:
             self.sent.upsert(
                 self.company_id, trn_id, self.env,
                 status="accepted", ksef_number=ksef_number,
+                error_detail=None, error_code=None,
             )
             sent_refs[trn_id] = invoice_ref
         elif code == STATUS_DUPLICATE:

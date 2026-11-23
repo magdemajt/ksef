@@ -41,9 +41,16 @@ class FakeGateway:
         self.page = MetadataPage(invoices=[_meta(i) for i in range(invoices)])
         self.downloaded: list[str] = []
         self.server_refuses_with: Exception | None = None
+        self.login_fails_with: Exception | None = None
+        self.queries: list[int] = []
         self.xml = _built_invoice_xml()
 
+    def ensure_login(self) -> None:
+        if self.login_fails_with is not None:
+            raise self.login_fails_with
+
     def query_purchase_metadata(self, date_from, date_to=None, page_offset=0):
+        self.queries.append(page_offset)
         return self.page
 
     def download_invoice(self, ksef_number: str) -> bytes:
@@ -245,6 +252,64 @@ def test_auth_error_keeps_invoices_queued_and_explains_the_pause(env):
     gateway.server_refuses_with = None
     _unblock(env.conn)
     assert service.process_queue() == {"fetched": 3, "failed": 0, "queued": 0}
+
+
+def test_login_failure_keeps_invoices_queued(env):
+    service, gateway = env.build(3)
+    service.sync()
+    service.enqueue(_all_ids(env))
+    gateway.login_fails_with = RuntimeError("Brak sekretu 'ksef-token:firma_a:test'")
+    assert service.process_queue() == {"fetched": 0, "failed": 0, "queued": 3}
+    assert _statuses(env.downloads) == [("new", False)] * 3
+    assert gateway.downloaded == []
+    assert env.limiter.remaining("firma_a", "invoice_download_minute") == PER_MINUTE
+    reason = blocked_reason(service.sync_state, "firma_a", "test")
+    assert "logowanie do KSeF nie powiodlo sie" in reason and "Brak sekretu" in reason
+
+
+def test_interrupted_file_write_is_not_taken_for_a_downloaded_invoice(env, tmp_path):
+    service, gateway = env.build(1)
+    service.sync()
+    service.enqueue(_all_ids(env))
+    service.process_queue()
+    stored = list((tmp_path / "invoices" / "firma_a").iterdir())
+    assert [p.suffix for p in stored] == [".xml"]  # plik tymczasowy nie zostaje
+    assert stored[0].read_bytes() == gateway.xml
+
+
+def test_sync_pages_through_invoices_sharing_one_storage_date(env):
+    service, gateway = env.build(0)
+    same_moment = "2026-08-03T10:00:00+00:00"
+
+    def page(start: int, count: int, has_more: bool) -> MetadataPage:
+        metas = [_meta(i) for i in range(start, start + count)]
+        for meta in metas:
+            meta.storage_date = same_moment
+        return MetadataPage(invoices=metas, has_more=has_more)
+
+    pages = {0: page(0, 3, True), 1: page(3, 3, True), 2: page(6, 2, False)}
+    gateway.query_purchase_metadata = lambda date_from, date_to=None, page_offset=0: (
+        gateway.queries.append(page_offset) or pages[page_offset]
+    )
+    stats = service.sync()
+    # po pierwszej stronie kursor staje na wspolnej dacie; ponowione zapytanie zwraca te sama
+    # strone (3 znane), wiec dalej idziemy numerami stron zamiast pytac w kolko o to samo
+    assert gateway.queries == [0, 0, 1, 2]
+    assert stats["new"] == 8 and stats["known"] == 3
+
+
+def test_sync_keeps_asking_from_cursor_when_dates_advance(env):
+    service, gateway = env.build(0)
+    first = MetadataPage(invoices=[_meta(i) for i in range(3)], has_more=True)
+    second = MetadataPage(invoices=[_meta(i) for i in range(2, 5)], has_more=False)
+    answers = [first, second]
+    gateway.query_purchase_metadata = lambda date_from, date_to=None, page_offset=0: (
+        gateway.queries.append(page_offset) or (answers.pop(0) if answers else MetadataPage())
+    )
+    stats = service.sync()
+    # dalsze zapytania to kolejne (puste) okna dat - zawsze od pierwszej strony
+    assert set(gateway.queries) == {0} and len(gateway.queries) >= 2
+    assert stats["new"] == 5 and stats["known"] == 1
 
 
 def test_connection_error_keeps_invoices_queued(env):

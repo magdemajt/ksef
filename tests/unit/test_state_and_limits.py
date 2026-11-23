@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -96,3 +97,67 @@ class TestDownloadRepo:
         repo.set_status(row_id, "new", exported_at="2026-11-17T20:00:00+00:00", error_detail=None)
         row = repo.get(row_id)
         assert row["status"] == "new" and row["exported_at"]
+
+
+class TestSharedConnection:
+    """Jedno polaczenie SQLite dla wszystkich watkow aplikacji."""
+
+    def test_confirm_token_is_consumed_by_exactly_one_of_two_concurrent_requests(self, conn):
+        batches = BatchRepo(conn)
+        for _ in range(30):
+            token = batches.create("f1", "test", [1, 2], {})
+            start = threading.Barrier(2)
+            got = []
+
+            def confirm(token=token, start=start, got=got):
+                start.wait()
+                got.append(batches.consume(token))
+
+            threads = [threading.Thread(target=confirm) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            assert sum(row is not None for row in got) == 1
+
+    def test_failed_transaction_does_not_roll_back_another_threads_write(self, conn):
+        downloads = DownloadRepo(conn)
+        downloads.insert_if_new("f1", "test", "K1", invoice_number="FA/1")
+        row_id = downloads.list_for("f1", "test")[0]["id"]
+        inside = threading.Event()
+        release = threading.Event()
+
+        def failing_request():
+            try:
+                with conn:
+                    conn.execute(
+                        "UPDATE downloaded_invoices SET seller_name='w trakcie' WHERE id=?",
+                        (row_id,),
+                    )
+                    inside.set()
+                    release.wait(2)
+                    raise RuntimeError("blad w polowie transakcji")
+            except RuntimeError:
+                pass
+
+        request = threading.Thread(target=failing_request)
+        request.start()
+        assert inside.wait(2)
+        # watek kolejki zapisuje pobrana fakture, gdy tamta transakcja jeszcze trwa
+        worker = threading.Thread(
+            target=lambda: downloads.set_status(row_id, "new", xml_path="/x.xml")
+        )
+        worker.start()
+        release.set()
+        request.join()
+        worker.join()
+        row = downloads.get(row_id)
+        assert row["xml_path"] == "/x.xml"
+        assert row["seller_name"] is None  # nieudana transakcja cofnieta w calosci
+
+    def test_reading_limits_leaves_no_open_transaction(self, conn):
+        limiter = RateLimiter(conn)
+        limiter.acquire("f1", "invoice_send")
+        limiter.remaining("f1", "invoice_send")
+        limiter.resets_at("f1", "invoice_send")
+        assert not conn.in_transaction

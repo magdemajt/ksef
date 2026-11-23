@@ -44,7 +44,13 @@ async def _queue_worker(app: FastAPI) -> None:
     gdy kolejka jest pusta, zatrzymana albo wyczerpal sie limit KSeF (16/min, 64/h).
     """
     context: AppContext = app.state.ctx
-    context.xml_queue.release_all()  # po restarcie zadna pozycja nie jest w trakcie pobierania
+    # Sprzatanie po poprzednim uruchomieniu dopiero po chwili: druga, omylkowo uruchomiona
+    # kopia programu konczy sie od razu (zajety port) i nie moze ruszyc stanu dzialajacej.
+    await asyncio.sleep(QUEUE_POLL_SECONDS)
+    context.xml_queue.release_all()  # zadna pozycja nie jest w trakcie pobierania
+    interrupted = context.sent.reset_interrupted()
+    if interrupted:
+        logger.warning("Przerwane wysylki sprzedazy oznaczone jako blad: %d", interrupted)
     while True:
         await asyncio.sleep(QUEUE_POLL_SECONDS)
         env = context.cfg.ksef.environment

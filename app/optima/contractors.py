@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 
+from app.optima.db import fetch_all
 from app.optima.models import Contractor
 
 logger = logging.getLogger(__name__)
@@ -21,19 +22,20 @@ def find_by_nip(conn, nip: str) -> Contractor | None:
     wanted = normalize_nip(nip)
     if len(wanted) != 10:
         return None
-    cur = conn.cursor()
-    cur.execute(
+    # ten sam NIP moze miec w Optimie kilka kart kontrahenta - bierzemy pierwsza (najstarsza)
+    _, rows = fetch_all(
+        conn,
         """
         SELECT Knt_KntId, Knt_Kod, Knt_Nip, Knt_Nazwa1, Knt_Nazwa2, Knt_Nazwa3
         FROM CDN.Kontrahenci
         WHERE REPLACE(REPLACE(REPLACE(Knt_Nip,'-',''),' ',''),'PL','') = ?
+        ORDER BY Knt_KntId
         """,
         (wanted,),
     )
-    row = cur.fetchone()
-    if row is None:
+    if not rows:
         return None
-    knt_id, kod, knt_nip, n1, n2, n3 = row
+    knt_id, kod, knt_nip, n1, n2, n3 = rows[0]
     return Contractor(
         knt_id=knt_id,
         kod=kod or "",
@@ -51,16 +53,13 @@ def _guid_text(value) -> str:
 def _row_guid(conn, query: str, params: tuple) -> str:
     """GUID wiersza - kolumna rozpoznawana po nazwie (*GUID), bo nie jest udokumentowana."""
     try:
-        cur = conn.cursor()
-        cur.execute(query, params)
-        cols = [d[0] for d in cur.description]
-        row = cur.fetchone()
+        cols, rows = fetch_all(conn, query, params)
     except Exception:
         logger.exception("Odczyt GUID nie powiodl sie")
         return ""
-    if row is None:
+    if not rows:
         return ""
-    for col, value in zip(cols, row):
+    for col, value in zip(cols, rows[0]):
         if col.lower().endswith("guid") and _guid_text(value):
             return _guid_text(value)
     return ""
@@ -69,10 +68,7 @@ def _row_guid(conn, query: str, params: tuple) -> str:
 def payment_form_guids(conn) -> dict[str, str]:
     """Nazwa formy platnosci (male litery) -> GUID; do pliku pracy rozproszonej."""
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM CDN.FormyPlatnosci")
-        cols = [d[0] for d in cur.description]
-        rows = cur.fetchall()
+        cols, rows = fetch_all(conn, "SELECT * FROM CDN.FormyPlatnosci")
     except Exception:
         logger.exception("Odczyt form platnosci nie powiodl sie")
         return {}
@@ -89,25 +85,38 @@ def payment_form_guids(conn) -> dict[str, str]:
     return found
 
 
+def _missing_object(exc: Exception) -> bool:
+    """Czy blad oznacza brak tabeli/kolumny (starsza Optima), a nie awarie zapytania?
+
+    Tylko wtedy wolno uznac "Optima nie zna tej faktury". Timeout, zakleszczenie czy zajete
+    polaczenie potraktowane tak samo wylaczalyby po cichu kontrole duplikatow.
+    """
+    text = str(exc)
+    return (
+        type(exc).__name__ == "ProgrammingError"
+        or "42S02" in text or "42S22" in text
+        or "Invalid object name" in text or "Invalid column name" in text
+    )
+
+
 def ksef_number_known(conn, ksef_number: str) -> bool:
     """Czy Optima juz pobrala te fakture (tabela CDN.DokumentyKSeF)?"""
-    cur = conn.cursor()
     try:
-        cur.execute(
-            "SELECT COUNT(*) FROM CDN.DokumentyKSeF WHERE DKF_NumerKSeF = ?",
-            (ksef_number,),
+        _, rows = fetch_all(
+            conn, "SELECT COUNT(*) FROM CDN.DokumentyKSeF WHERE DKF_NumerKSeF = ?", (ksef_number,)
         )
-    except Exception:
-        # starsza Optima bez tabeli DokumentyKSeF
-        return False
-    return (cur.fetchone() or [0])[0] > 0
+    except Exception as exc:
+        if not _missing_object(exc):
+            raise
+        return False  # starsza Optima bez tabeli DokumentyKSeF
+    return bool(rows) and rows[0][0] > 0
 
 
 def vat_register_has(conn, seller_nip: str, invoice_number: str) -> bool:
     """Czy w rejestrze VAT zakupu jest juz wpis (NIP dostawcy, numer faktury)?"""
     wanted = normalize_nip(seller_nip)
-    cur = conn.cursor()
-    cur.execute(
+    _, rows = fetch_all(
+        conn,
         """
         SELECT COUNT(*) FROM CDN.VatNag
         WHERE VaN_Typ = 1 AND VaN_Dokument = ?
@@ -115,7 +124,7 @@ def vat_register_has(conn, seller_nip: str, invoice_number: str) -> bool:
         """,
         (invoice_number, wanted),
     )
-    return (cur.fetchone() or [0])[0] > 0
+    return bool(rows) and rows[0][0] > 0
 
 
 _IN_CHUNK = 500  # SQL Server przyjmuje do 2100 parametrow w zapytaniu
@@ -141,17 +150,18 @@ def find_vat_entries(conn, invoices: list[tuple[str, str, str]]) -> dict[str, in
     ksef_numbers = [ksef for ksef, _, _ in invoices if ksef]
     try:
         for chunk in _chunks(ksef_numbers):
-            cur = conn.cursor()
-            cur.execute(
+            _, rows = fetch_all(
+                conn,
                 "SELECT VaN_NrKSeF, VaN_VaNID FROM CDN.VatNag WHERE VaN_Typ = 1 "
                 f"AND VaN_NrKSeF IN ({','.join('?' * len(chunk))})",
                 tuple(chunk),
             )
-            for ksef, van_id in cur.fetchall():
+            for ksef, van_id in rows:
                 found.setdefault((ksef or "").strip(), int(van_id))
-    except Exception:
-        # starsza Optima bez VaN_NrKSeF - zostaje dopasowanie po NIP i numerze
-        found = {}
+    except Exception as exc:
+        if not _missing_object(exc):
+            raise
+        found = {}  # starsza Optima bez VaN_NrKSeF - zostaje dopasowanie po NIP i numerze
 
     by_doc: dict[tuple[str, str], list[str]] = {}
     for ksef, nip, number in invoices:
@@ -160,13 +170,13 @@ def find_vat_entries(conn, invoices: list[tuple[str, str, str]]) -> dict[str, in
             by_doc.setdefault(key, []).append(ksef)
     numbers = sorted({number.strip() for _, _, number in invoices if (number or "").strip()})
     for chunk in _chunks(numbers) if by_doc else ():
-        cur = conn.cursor()
-        cur.execute(
+        _, rows = fetch_all(
+            conn,
             "SELECT VaN_Dokument, VaN_KntNipE, VaN_VaNID FROM CDN.VatNag WHERE VaN_Typ = 1 "
             f"AND VaN_Dokument IN ({','.join('?' * len(chunk))})",
             tuple(chunk),
         )
-        for number, nip, van_id in cur.fetchall():
+        for number, nip, van_id in rows:
             for ksef in by_doc.get(_doc_key(number, nip or ""), ()):
                 found.setdefault(ksef, int(van_id))
     return found
@@ -177,14 +187,15 @@ def ksef_numbers_known(conn, ksef_numbers: list[str]) -> set[str]:
     known: set[str] = set()
     try:
         for chunk in _chunks([n for n in ksef_numbers if n]):
-            cur = conn.cursor()
-            cur.execute(
+            _, rows = fetch_all(
+                conn,
                 "SELECT DKF_NumerKSeF FROM CDN.DokumentyKSeF "
                 f"WHERE DKF_NumerKSeF IN ({','.join('?' * len(chunk))})",
                 tuple(chunk),
             )
-            known.update((row[0] or "").strip() for row in cur.fetchall())
-    except Exception:
-        # starsza Optima bez tabeli DokumentyKSeF
-        return set()
+            known.update((row[0] or "").strip() for row in rows)
+    except Exception as exc:
+        if not _missing_object(exc):
+            raise
+        return set()  # starsza Optima bez tabeli DokumentyKSeF
     return known

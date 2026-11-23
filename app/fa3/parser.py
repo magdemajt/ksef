@@ -8,7 +8,7 @@ zaliczkowych itp.), agregujemy z wierszy FaWiersz.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from lxml import etree
 
@@ -21,7 +21,7 @@ BUCKET_TO_RATE: dict[str, tuple[str, Decimal | None]] = {
     "P_13_1": ("23", Decimal(23)),
     "P_13_2": ("8", Decimal(8)),
     "P_13_3": ("5", Decimal(5)),
-    "P_13_4": ("3", Decimal(3)),
+    "P_13_4": ("4", Decimal(4)),  # ryczalt taksowek osobowych
     "P_13_5": ("oo", None),
     "P_13_6_1": ("0", Decimal(0)),
     "P_13_6_2": ("0 WDT", Decimal(0)),
@@ -106,7 +106,10 @@ def _find_ns(root: etree._Element) -> str:
 
 
 def _text(el: etree._Element | None, default: str = "") -> str:
-    return el.text.strip() if el is not None and el.text else default
+    if el is None:
+        return default
+    # itertext: komentarz wewnatrz elementu (<P_15><!-- x -->177.00</P_15>) nie gubi wartosci
+    return "".join(el.itertext()).strip() or default
 
 
 def _dec(el: etree._Element | None) -> Decimal | None:
@@ -162,6 +165,8 @@ def parse_invoice(xml: bytes, ksef_number: str | None = None) -> PurchaseInvoice
         # awaryjnie agreguj z wierszy
         agg: dict[str, VatLine] = {}
         for w in fa.findall(q("FaWiersz")):
+            if _text(w.find(q("StanPrzed"))) == "1":
+                continue  # korekta: wiersz "przed" nie jest sprzedaza
             symbol = _text(w.find(q("P_12")), "?")
             netto = _dec(w.find(q("P_11"))) or Decimal(0)
             rate = None
@@ -171,9 +176,20 @@ def parse_invoice(xml: bytes, ksef_number: str | None = None) -> PurchaseInvoice
                 pass
             line = agg.setdefault(symbol, VatLine(symbol, rate, Decimal(0), Decimal(0)))
             line.netto += netto
-            if rate is not None:
-                line.vat += (netto * rate / 100).quantize(Decimal("0.01"))
+        for line in agg.values():
+            if line.stawka is not None:
+                line.vat = (line.netto * line.stawka / 100).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
         vat_lines = list(agg.values())
+        # Kwoty wyliczone z wierszy to przyblizenie (ceny brutto, zaliczki, korekty) - do rejestru
+        # VAT moga trafic tylko wtedy, gdy zgadzaja sie z kwota naleznosci z faktury.
+        summed = sum((v.netto + v.vat for v in vat_lines), Decimal(0))
+        if summed != total_gross:
+            raise ParseError(
+                f"Faktura nie ma podsumowania stawek VAT (P_13_x), a suma wierszy {summed} "
+                f"rozni sie od kwoty naleznosci {total_gross} - wprowadz ja recznie"
+            )
 
     lines = [
         InvoiceLine(

@@ -36,11 +36,8 @@ class FakeCursor:
     def execute(self, sql, params=()):
         self._sql = sql
 
-    def fetchone(self):
-        return (self.duplicates,) if "COUNT" in self._sql else None
-
     def fetchall(self):
-        return []
+        return [(self.duplicates,)] if "COUNT" in self._sql else []
 
 
 @pytest.fixture
@@ -160,6 +157,7 @@ class RegisterCursor:
         self.ksef_numbers = ksef_numbers or {}
         self.native_ksef = native_ksef
         self.has_ksef_column = has_ksef_column
+        self.description = []
         self._rows = []
 
     def execute(self, sql, params=()):
@@ -559,3 +557,37 @@ def test_queue_control_stops_resumes_and_purges(queue_setup):
     )
     assert q.order() == []
     assert "Kolejka jest pusta" in q.captured["html"]
+
+
+def test_xml_export_reports_optima_read_error_and_closes_connection(setup, listed):
+    downloads, row_id, make_context = setup
+    context = make_context(0)
+    closed = []
+
+    class BrokenCursor(FakeCursor):
+        def execute(self, sql, params=()):
+            if "VatNag" in sql:
+                raise RuntimeError("Connection is busy with results for another command")
+
+    context.optima = SimpleNamespace(read_connection=lambda comp: SimpleNamespace(
+        cursor=lambda: BrokenCursor(0), close=lambda: closed.append(True),
+    ))
+    purchases_export(
+        request=None, c="firma_a", csrf="x", mode="xml", ids=[row_id], context=context
+    )
+    assert "blad odczytu z bazy Optimy" in listed["msg"] and "Connection is busy" in listed["msg"]
+    assert closed == [True]
+    assert downloads.get(row_id)["exported_at"] is None
+
+
+def test_xml_export_skips_unparsable_invoice_instead_of_crashing(setup, listed, tmp_path):
+    downloads, row_id, make_context = setup
+    broken = tmp_path / "broken.xml"
+    broken.write_bytes(b"<not-an-invoice/>")
+    downloads.set_status(row_id, "error", xml_path=str(broken))
+    purchases_export(
+        request=None, c="firma_a", csrf="x", mode="xml", ids=[row_id], context=make_context(0)
+    )
+    assert "Nic do eksportu" in listed["msg"]
+    row = downloads.get(row_id)
+    assert row["status"] == "error" and row["error_detail"]

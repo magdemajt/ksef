@@ -82,7 +82,7 @@ def sales_list(
                 detail=st["error_detail"], ksef_number=st["ksef_number"] or row["ksef_number"],
                 upo=bool(st["upo_path"]),
             )
-            if st["status"] in ("accepted", "sent", "queued", "duplicate"):
+            if st["status"] in SENT_STATUSES:
                 row["selectable"] = False
         rows.append(row)
 
@@ -97,15 +97,28 @@ def sales_list(
     )
 
 
+# statusy lokalne, przy ktorych faktura jest juz w KSeF albo wlasnie tam idzie
+SENT_STATUSES = ("accepted", "sent", "queued", "duplicate")
+
+
 def _build_previews(context: AppContext, company_id: str, trn_ids: list[int],
                     date_from: str, date_to: str):
     company = context.company(company_id)
     reader = context.sales_reader(company_id)
+    local = context.sent.statuses_for(company_id, context.cfg.ksef.environment)
     df = date.fromisoformat(date_from) - timedelta(days=366)
     dt = date.fromisoformat(date_to) + timedelta(days=31)
     ok_rows, bad_rows = [], []
     totals = {"netto": Decimal(0), "brutto": Decimal(0)}
     for trn_id in trn_ids:
+        st = local.get(trn_id)
+        if st is not None and st["status"] in SENT_STATUSES:
+            # lista w przegladarce mogla byc nieaktualna (przycisk Wstecz, druga karta)
+            bad_rows.append({
+                "numer": st["numer_pelny"] or f"TrN_TrNID={trn_id}",
+                "error": "Faktura jest juz wyslana do KSeF albo w trakcie wysylki",
+            })
+            continue
         try:
             inv = reader.get_invoice(trn_id, df, dt)
         except Exception as exc:
@@ -160,7 +173,15 @@ def sales_preview(
             f"/sales?c={c}&date_from={date_from}&date_to={date_to}", status_code=303
         )
     company = context.company(c)
-    ok_rows, bad_rows, totals = _build_previews(context, c, trn_ids, date_from, date_to)
+    try:
+        ok_rows, bad_rows, totals = _build_previews(context, c, trn_ids, date_from, date_to)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - brak polaczenia z Optima / brak hasla SQL
+        logger.exception("Przygotowanie wysylki nie powiodlo sie")
+        raise HTTPException(
+            503, f"Nie udalo sie przygotowac wysylki - brak polaczenia z baza Optimy: {exc}"
+        ) from exc
     confirm_token = None
     if ok_rows:
         confirm_token = context.batches.create(
@@ -205,18 +226,43 @@ def sales_send(
         if "".join(ch for ch in nip_confirm if ch.isdigit()) != company.nip:
             raise HTTPException(403, "Przepisany NIP nie zgadza sie - wysylka odrzucona")
 
+    # Serwis (polaczenie z Optima) powstaje przed zuzyciem potwierdzenia: gdy baza jest
+    # niedostepna, nic nie zostaje oznaczone jako "w kolejce" i mozna potwierdzic ponownie.
+    try:
+        service = context.send_service(c)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Wysylka: brak polaczenia z baza Optimy")
+        raise HTTPException(
+            503, f"Nic nie wyslano - brak polaczenia z baza Optimy: {exc}"
+        ) from exc
+
     batch = context.batches.consume(confirm_token)
     if batch is None:
         raise HTTPException(
             410, "Potwierdzenie wygaslo lub zostalo juz uzyte - przygotuj wysylke ponownie"
         )
-    trn_ids = json.loads(batch["trn_ids_json"])
+    if batch["company_id"] != c or batch["environment"] != env:
+        # identyfikatory faktur z partii naleza do bazy innej firmy / innego srodowiska KSeF
+        raise HTTPException(
+            409, "Potwierdzenie dotyczy innej firmy lub srodowiska - przygotuj wysylke ponownie"
+        )
+    local = context.sent.statuses_for(c, env)
+    trn_ids = [
+        trn_id for trn_id in json.loads(batch["trn_ids_json"])
+        if trn_id not in local or local[trn_id]["status"] not in SENT_STATUSES
+    ]
+    if not trn_ids:
+        raise HTTPException(
+            409, "Faktury z tej partii sa juz wyslane albo w trakcie wysylki - nic nie wyslano"
+        )
     for trn_id in trn_ids:
-        context.sent.upsert(c, trn_id, env, status="queued", numer_pelny="")
+        context.sent.upsert(
+            c, trn_id, env, status="queued", numer_pelny="", error_detail=None, error_code=None
+        )
     context.audit.log(
         "batch_confirmed", c, "batch", confirm_token, env, {"trn_ids": trn_ids}
     )
-    context.send_service(c).send_batch_async(
+    service.send_batch_async(
         trn_ids, date.fromisoformat(date_from), date.fromisoformat(date_to)
     )
     return request.app.state.templates.TemplateResponse(
@@ -236,7 +282,10 @@ def job_status(
     trn_ids: str,
     context: AppContext = Depends(ctx),
 ):
-    ids = [int(x) for x in trn_ids.split(",") if x]
+    try:
+        ids = [int(x) for x in trn_ids.split(",") if x]
+    except ValueError as exc:
+        raise HTTPException(400, "Niepoprawna lista faktur") from exc
     env = context.cfg.ksef.environment
     rows = []
     done = True
@@ -259,6 +308,8 @@ def job_status(
         request,
         "partials/send_status.html",
         {"context": context, "company_id": c, "rows": rows, "done": done},
+        # 286 = htmx konczy odpytywanie (samo usuniecie hx-trigger w htmx 2 go nie zatrzymuje)
+        status_code=286 if done else 200,
     )
 
 
