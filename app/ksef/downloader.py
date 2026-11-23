@@ -17,7 +17,8 @@ import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from ksef2.core.exceptions import KSeFRateLimitError
+import httpx
+from ksef2.core.exceptions import KSeFAuthError, KSeFRateLimitError
 
 from app.config import CompanyConfig, KsefEnv
 from app.fa3.parser import ParseError, parse_invoice
@@ -29,8 +30,13 @@ logger = logging.getLogger(__name__)
 
 HWM_KEY = "purchase_hwm"
 BLOCKED_KEY = "download_blocked_until"
+BLOCK_REASON_KEY = "download_blocked_reason"
 PAUSED_KEY = "xml_queue_paused"
-ERROR_BACKOFF = timedelta(seconds=60)  # po bledzie pobrania (np. brak sieci) - nie mielimy kolejki
+ERROR_BACKOFF = timedelta(seconds=60)  # po bledzie pobrania jednej faktury
+# Blad logowania albo polaczenia dotyczy calej kolejki, nie faktury: pozycja zostaje,
+# a kolejka ponawia probe po przerwie (logowanie rzadziej - zly token sam sie nie naprawi).
+CONNECTION_BACKOFF = timedelta(seconds=60)
+AUTH_BACKOFF = timedelta(minutes=5)
 MAX_RANGE_DAYS = 88  # zapas ponizej limitu 3 miesiecy na zakres dat
 
 
@@ -39,6 +45,11 @@ def blocked_until(sync_state: SyncStateRepo, company_id: str, env: str) -> datet
     raw = sync_state.get(company_id, f"{BLOCKED_KEY}:{env}")
     until = datetime.fromisoformat(raw) if raw else None
     return until if until and until > datetime.now(UTC) else None
+
+
+def blocked_reason(sync_state: SyncStateRepo, company_id: str, env: str) -> str:
+    """Powod trwajacej przerwy, gdy jest nim blad (pusty napis = zwykly limit KSeF)."""
+    return sync_state.get(company_id, f"{BLOCK_REASON_KEY}:{env}") or ""
 
 
 def queue_paused(sync_state: SyncStateRepo, company_id: str, env: str) -> bool:
@@ -142,11 +153,13 @@ class DownloadService:
     def _blocked_until(self) -> datetime | None:
         return blocked_until(self.sync_state, self.company_id, self.env)
 
-    def _block_downloads(self, until: datetime) -> None:
+    def _block_downloads(self, until: datetime, reason: str = "") -> None:
         self.sync_state.set(self.company_id, f"{BLOCKED_KEY}:{self.env}", until.isoformat())
+        self.sync_state.set(self.company_id, f"{BLOCK_REASON_KEY}:{self.env}", reason)
         logger.info(
-            "Pobieranie XML dla %s wstrzymane - wznowienie o %s",
+            "Pobieranie XML dla %s wstrzymane - wznowienie o %s%s",
             self.company_id, until.astimezone().strftime("%H:%M:%S"),
+            f" ({reason})" if reason else "",
         )
 
     def enqueue(self, invoice_ids: list[int], *, front: bool = False) -> dict:
@@ -185,9 +198,11 @@ class DownloadService:
             self.queue.remove(item["invoice_id"])
             if outcome == "failed":
                 # blad zostaje przy fakturze (mozna ja dodac ponownie); chwila przerwy,
-                # zeby np. brak sieci nie oznaczyl bledem calej kolejki
+                # zeby seria bledow nie oznaczyla bledem calej kolejki w kilka sekund
                 failed += 1
-                self._block_downloads(datetime.now(UTC) + ERROR_BACKOFF)
+                self._block_downloads(
+                    datetime.now(UTC) + ERROR_BACKOFF, "blad pobrania faktury - szczegoly na liscie"
+                )
                 break
             fetched += 1
         return {
@@ -208,8 +223,8 @@ class DownloadService:
     def _fetch(self, row_id: int, ksef_number: str) -> str:
         """Pobiera i zapisuje XML jednej faktury.
 
-        Zwraca "done" (XML zapisany), "limited" (limit KSeF - sprobowac pozniej)
-        albo "failed" (blad zapisany przy fakturze).
+        Zwraca "done" (XML zapisany), "limited" (limit KSeF, blad logowania albo
+        polaczenia - faktura zostaje w kolejce) albo "failed" (blad zapisany przy fakturze).
         """
         xml_path = self.invoice_store / self.company_id / f"{ksef_number}.xml"
         try:
@@ -226,6 +241,20 @@ class DownloadService:
             # serwer i tak odmowil (np. z tego samego NIP korzysta inny program)
             wait = timedelta(seconds=(exc.retry_after or 60) + 2)
             self._block_downloads(datetime.now(UTC) + wait)
+            return "limited"
+        except KSeFAuthError as exc:
+            # bramka juz ponowila logowanie - to problem tokena/uprawnien, nie tej faktury
+            logger.warning("KSeF odmowil dostepu przy pobieraniu %s: %s", ksef_number, exc)
+            self._block_downloads(
+                datetime.now(UTC) + AUTH_BACKOFF,
+                f"KSeF odmowil dostepu ({exc.status_code}) - sprawdz token w Ustawieniach",
+            )
+            return "limited"
+        except httpx.HTTPError as exc:
+            logger.warning("Brak polaczenia z KSeF przy pobieraniu %s: %s", ksef_number, exc)
+            self._block_downloads(
+                datetime.now(UTC) + CONNECTION_BACKOFF, f"brak polaczenia z KSeF: {exc}"[:200]
+            )
             return "limited"
         except Exception as exc:
             logger.exception("Pobranie %s nie powiodlo sie", ksef_number)

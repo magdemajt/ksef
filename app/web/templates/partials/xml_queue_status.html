@@ -5,6 +5,8 @@
     <span class="badge b-blocked">zatrzymana</span>
     {% elif queue_current %}
     <span class="badge b-queued">pobieranie {{ queue_current['invoice_number'] or queue_current['ksef_number'] }}</span>
+    {% elif queue_total and queue_blocked and queue_blocked_reason %}
+    <span class="badge b-error" style="white-space:normal">przerwa do {{ queue_blocked }} — {{ queue_blocked_reason }}</span>
     {% elif queue_total and queue_blocked %}
     <span class="badge b-duplicate" title="KSeF pozwala pobrac 16 faktur na minute i 64 na godzine; po bledzie pobrania kolejka robi minute przerwy">przerwa do {{ queue_blocked }} (limit KSeF)</span>
     {% elif queue_total %}

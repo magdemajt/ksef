@@ -3,10 +3,17 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import httpx
 import pytest
-from ksef2.core.exceptions import KSeFRateLimitError
+from ksef2.core.exceptions import KSeFAuthError, KSeFRateLimitError
 
-from app.ksef.downloader import ERROR_BACKOFF, DownloadService, set_queue_paused
+from app.ksef.downloader import (
+    AUTH_BACKOFF,
+    ERROR_BACKOFF,
+    DownloadService,
+    blocked_reason,
+    set_queue_paused,
+)
 from app.ksef.models import MetadataPage, PurchaseInvoiceMeta
 from app.ksef.ratelimit import DOWNLOAD_ENDPOINTS, LIMITS, RateLimiter, RateLimitExceeded
 from app.state import db as state_db
@@ -220,6 +227,47 @@ def test_failed_download_leaves_the_rest_of_the_queue_alone(env):
     assert service.enqueue(_ids(env, 0))["added"] == 1
     assert service.process_queue() == {"fetched": 3, "failed": 0, "queued": 0}
     assert _statuses(env.downloads) == [("new", True)] * 3
+
+
+def test_auth_error_keeps_invoices_queued_and_explains_the_pause(env):
+    service, gateway = env.build(3)
+    service.sync()
+    service.enqueue(_all_ids(env))
+    gateway.server_refuses_with = KSeFAuthError(401, "Wymagane jest uwierzytelnienie.")
+    assert service.process_queue() == {"fetched": 0, "failed": 0, "queued": 3}
+    # to nie wina faktury: zadna nie dostaje bledu ani nie wypada z kolejki
+    assert _statuses(env.downloads) == [("new", False)] * 3
+    assert {item["state"] for item in env.queue.items("firma_a", "test")} == {"queued"}
+    wait = service._blocked_until() - datetime.now(UTC)
+    assert AUTH_BACKOFF - timedelta(seconds=5) < wait <= AUTH_BACKOFF
+    assert "odmowil dostepu (401)" in blocked_reason(service.sync_state, "firma_a", "test")
+
+    gateway.server_refuses_with = None
+    _unblock(env.conn)
+    assert service.process_queue() == {"fetched": 3, "failed": 0, "queued": 0}
+
+
+def test_connection_error_keeps_invoices_queued(env):
+    service, gateway = env.build(2)
+    service.sync()
+    service.enqueue(_all_ids(env))
+    gateway.server_refuses_with = httpx.ConnectError("brak sieci")
+    assert service.process_queue() == {"fetched": 0, "failed": 0, "queued": 2}
+    assert _statuses(env.downloads) == [("new", False)] * 2
+    assert "brak polaczenia z KSeF" in blocked_reason(service.sync_state, "firma_a", "test")
+
+
+def test_limit_pause_clears_earlier_error_reason(env):
+    service, gateway = env.build(40)
+    service.sync()
+    service.enqueue(_all_ids(env))
+    gateway.server_refuses_with = httpx.ConnectError("brak sieci")
+    service.process_queue()
+    gateway.server_refuses_with = None
+    _unblock(env.conn)
+    service.process_queue()  # konczy sie na limicie minutowym
+    assert service._blocked_until() is not None
+    assert blocked_reason(service.sync_state, "firma_a", "test") == ""
 
 
 def test_stopped_queue_downloads_nothing_until_resumed(env):

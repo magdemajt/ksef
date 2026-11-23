@@ -10,7 +10,12 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 
 from app.fa3.parser import parse_invoice
-from app.ksef.downloader import blocked_until, queue_paused, set_queue_paused
+from app.ksef.downloader import (
+    blocked_reason,
+    blocked_until,
+    queue_paused,
+    set_queue_paused,
+)
 from app.ksef.ratelimit import RateLimitExceeded
 from app.optima.contractors import (
     find_by_nip,
@@ -193,6 +198,7 @@ def _queue_view(context: AppContext, company_id: str, *, opened: bool) -> dict:
         "queue_hidden": max(0, total - len(items)) if opened else 0,
         "queue_paused": queue_paused(context.sync_state, company_id, env),
         "queue_blocked": blocked.astimezone().strftime("%H:%M:%S") if blocked else None,
+        "queue_blocked_reason": blocked_reason(context.sync_state, company_id, env),
     }
 
 

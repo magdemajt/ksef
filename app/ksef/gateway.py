@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import ksef2
 from cryptography.hazmat.primitives.serialization import pkcs12
 from ksef2.clients.authenticated import AuthenticatedClient
 from ksef2.clients.online import OnlineSessionClient
+from ksef2.core.exceptions import KSeFAuthError
 from ksef2.domain.models.invoices import InvoicesFilter
 from ksef2.domain.models.pagination import InvoiceMetadataParams
 from ksef2.domain.models.session import FormSchema
@@ -35,6 +36,9 @@ _ENV_MAP = {
 
 # Minimalny odstep miedzy pobraniami pojedynczych faktur (limit KSeF: 8 req/s)
 _DOWNLOAD_SPACING_S = 0.15
+# Token dostepowy KSeF zyje kilkanascie minut, a ksef2 sam go nie odnawia -
+# logujemy sie ponownie z takim zapasem przed koncem waznosci.
+_TOKEN_MARGIN = timedelta(seconds=60)
 
 
 class KsefAuthConfigError(RuntimeError):
@@ -67,9 +71,37 @@ class KsefGateway:
         return self._client
 
     def authed(self) -> AuthenticatedClient:
+        if self._authed is not None and self._token_expiring():
+            logger.info("Token dostepowy KSeF firmy %s wygasa - ponowne logowanie", self.company_id)
+            self._authed = None
         if self._authed is None:
             self._authed = self._authenticate()
         return self._authed
+
+    def _token_expiring(self) -> bool:
+        try:
+            valid_until = self._authed.auth_tokens.access_token.valid_until
+        except AttributeError:
+            return False
+        if valid_until.tzinfo is None:
+            valid_until = valid_until.replace(tzinfo=UTC)
+        return datetime.now(UTC) >= valid_until - _TOKEN_MARGIN
+
+    def _call(self, call):
+        """Wywolanie na uwierzytelnionym kliencie; po 401 loguje sie ponownie i powtarza raz.
+
+        Aplikacja dziala godzinami (kolejka XML, scheduler), a token dostepowy wygasa po
+        kilkunastu minutach - 401 w trakcie pracy to zwykle wygasly albo uniewazniony token.
+        403 (brak uprawnien) nie jest powtarzane.
+        """
+        try:
+            return call(self.authed())
+        except KSeFAuthError as exc:
+            if exc.status_code != 401:
+                raise
+            logger.info("KSeF odrzucil token firmy %s (401) - ponowne logowanie", self.company_id)
+            self.reauthenticate()
+            return call(self.authed())
 
     def reauthenticate(self) -> None:
         self._authed = None
@@ -131,7 +163,7 @@ class KsefGateway:
     # -- sesja online (wysylka) --
 
     def open_online_session(self) -> OnlineSessionClient:
-        return self.authed().online_session(form_code=FormSchema.FA3)
+        return self._call(lambda authed: authed.online_session(form_code=FormSchema.FA3))
 
     def send_invoice(self, session: OnlineSessionClient, xml: bytes) -> str:
         self.limiter.acquire(self.company_id, "invoice_send")
@@ -189,7 +221,9 @@ class KsefGateway:
             amount_type="brutto",
         )
         params = InvoiceMetadataParams(sort_order="asc", page_offset=page_offset, page_size=250)
-        resp = self.authed().invoices.query_metadata(filters=filters, params=params)
+        resp = self._call(
+            lambda authed: authed.invoices.query_metadata(filters=filters, params=params)
+        )
         page = MetadataPage(
             has_more=bool(getattr(resp, "has_more", False)),
             is_truncated=bool(getattr(resp, "is_truncated", False)),
@@ -220,7 +254,9 @@ class KsefGateway:
         if elapsed < _DOWNLOAD_SPACING_S:
             time.sleep(_DOWNLOAD_SPACING_S - elapsed)
         self._last_download_ts = time.monotonic()
-        return self.authed().invoices.download_invoice(ksef_number=ksef_number)
+        return self._call(
+            lambda authed: authed.invoices.download_invoice(ksef_number=ksef_number)
+        )
 
     def close(self) -> None:
         if self._client is not None:
